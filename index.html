@@ -1,0 +1,118 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>OpenLayers 지도 컨트롤</title>
+  <style>
+    * {
+      margin: 0;
+      padding: 0;
+      box-sizing: border-box;
+    }
+
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+      overflow: hidden;
+    }
+
+    #map {
+      width: 100vw;
+      height: 100vh;
+    }
+
+    .controls {
+      position: absolute;
+      top: 20px;
+      right: 20px;
+      background: white;
+      padding: 15px;
+      border-radius: 8px;
+      box-shadow: 0 2px 8px rgba(0,0,0,0.15);
+      z-index: 1000;
+      max-width: 220px;
+    }
+
+    .controls h3 {
+      margin: 0 0 10px 0;
+      font-size: 14px;
+      color: #333;
+    }
+
+    .button-group {
+      margin-bottom: 15px;
+    }
+
+    .button-group:last-child {
+      margin-bottom: 0;
+    }
+
+    .button-group label {
+      display: block;
+      font-size: 12px;
+      color: #666;
+      margin-bottom: 5px;
+    }
+
+    button {
+      width: 100%;
+      padding: 10px;
+      margin: 3px 0;
+      border: 1px solid #ddd;
+      background: white;
+      border-radius: 4px;
+      cursor: pointer;
+      font-size: 13px;
+      transition: all 0.2s;
+    }
+
+    button:hover {
+      background: #f5f5f5;
+    }
+
+    button.active {
+      background: #007bff;
+      color: white;
+      border-color: #007bff;
+    }
+
+    button:disabled {
+      opacity: 0.5;
+      cursor: not-allowed;
+    }
+
+    .help-text {
+      font-size: 11px;
+      color: #999;
+      margin-top: 5px;
+      line-height: 1.4;
+    }
+  </style>
+</head>
+<body>
+  <div id="map"></div>
+
+  <div class="controls">
+    <h3>지도 컨트롤</h3>
+
+    <div class="button-group">
+      <label>객체 생성</label>
+      <button id="drawLineString">LineString 그리기</button>
+      <button id="drawPolygon">Polygon 그리기</button>
+    </div>
+
+    <div class="button-group">
+      <label>객체 편집</label>
+      <button id="transform">이동</button>
+      <button id="rotate">회전</button>
+      <button id="scale">확대/축소</button>
+    </div>
+
+    <div class="button-group">
+      <button id="clearAll">모두 지우기</button>
+    </div>
+  </div>
+
+  <script type="module" src="/src/main.ts"></script>
+</body>
+</html>
