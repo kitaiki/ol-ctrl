@@ -74,6 +74,12 @@ export function startTransform(): void {
     // 회전 핸들 스타일 설정
     (transformInteraction as any).style.rotate = [rotateStyle];
 
+    // 지도 컨테이너에 편집 모드 커서 클래스 추가
+    const mapElement = map.getTargetElement();
+    if (mapElement) {
+      mapElement.classList.add('edit-mode');
+    }
+
     console.log('객체 편집 모드 시작');
   }
 }
@@ -81,6 +87,13 @@ export function startTransform(): void {
 export function stopTransform(): void {
   if (transformInteraction && map) {
     map.removeInteraction(transformInteraction);
+
+    // 지도 컨테이너에서 편집 모드 커서 클래스 제거
+    const mapElement = map.getTargetElement();
+    if (mapElement) {
+      mapElement.classList.remove('edit-mode');
+    }
+
     console.log('객체 편집 모드 종료');
   }
 }
