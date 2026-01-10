@@ -3,7 +3,7 @@ import VectorSource from 'ol/source/Vector';
 // @ts-ignore - ol-ext does not have TypeScript declarations
 import Transform from 'ol-ext/interaction/Transform';
 import { Style, Stroke, Fill, Icon } from 'ol/style';
-import { refreshImageStyle } from './image-overlay';
+import { refreshImageCache } from './image-overlay';
 
 let transformInteraction: Transform | null = null;
 let map: Map | null = null;
@@ -43,11 +43,11 @@ export function initTransform(mapInstance: Map, vectorSource: VectorSource): voi
   transformInteraction.on('transformend', (event: any) => {
     console.log('객체 변형 완료');
 
-    // 이미지 오버레이 Feature인 경우 Canvas Pattern 재생성
+    // 이미지 오버레이 Feature인 경우 Canvas 캐시 재생성
     const features = event.features.getArray();
     features.forEach((feature: any) => {
       if (feature.get('isImageOverlay')) {
-        refreshImageStyle(feature);
+        refreshImageCache(feature);
       }
     });
   });

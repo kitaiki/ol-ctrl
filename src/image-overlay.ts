@@ -6,6 +6,14 @@ import { Style, Stroke } from 'ol/style';
 import { fromLonLat } from 'ol/proj';
 import type { RenderFunction } from 'ol/style/Style';
 
+// 캐시 인터페이스
+interface ImageOverlayCache {
+  offscreenCanvas: HTMLCanvasElement;
+  lastAngle: number;
+  lastAngleIndex?: number;  // 선택된 변의 인덱스
+  lastBounds: { cx: number, cy: number, w: number, h: number };
+}
+
 // 상태 관리 (6개 → 2개로 축소)
 let imageFeature: Feature<Polygon> | null = null;
 let originalImage: HTMLImageElement | null = null;
@@ -23,9 +31,28 @@ function createPolygonFromExtent(extent: [number, number, number, number]): Poly
   return new Polygon([coordinates]);
 }
 
-// Canvas Pattern으로 이미지 렌더링
+// 오프스크린 캔버스 생성 함수
+function createOffscreenCanvas(
+  image: HTMLImageElement,
+  width: number,
+  height: number
+): HTMLCanvasElement {
+  const canvas = document.createElement('canvas');
+  canvas.width = width;
+  canvas.height = height;
+  const ctx = canvas.getContext('2d')!;
+
+  ctx.imageSmoothingEnabled = true;
+  ctx.imageSmoothingQuality = 'high';
+  ctx.drawImage(image, 0, 0, width, height);
+
+  return canvas;
+}
+
+// Canvas Pattern으로 이미지 렌더링 (캐시 활용)
 function createImageFillStyle(
   image: HTMLImageElement,
+  feature: Feature<Polygon>,
   polygon: Polygon,
   opacity: number
 ): Style {
@@ -35,15 +62,10 @@ function createImageFillStyle(
 
     ctx.save();
 
-    // Clipping Path 생성
-    ctx.beginPath();
-    ctx.moveTo(pixelCoords[0][0], pixelCoords[0][1]);
-    for (let i = 1; i < pixelCoords.length; i++) {
-      ctx.lineTo(pixelCoords[i][0], pixelCoords[i][1]);
-    }
-    ctx.closePath();
+    // 캐시 확인
+    let cache = feature.get('imageCache') as ImageOverlayCache | undefined;
 
-    // 픽셀 좌표에서 bounding box 계산
+    // 픽셀 좌표에서 bounding box와 중심점 계산
     let minX = Infinity, minY = Infinity;
     let maxX = -Infinity, maxY = -Infinity;
 
@@ -54,8 +76,86 @@ function createImageFillStyle(
       maxY = Math.max(maxY, coord[1]);
     }
 
+    const centerX = (minX + maxX) / 2;
+    const centerY = (minY + maxY) / 2;
     const width = maxX - minX;
     const height = maxY - minY;
+
+    // 캐시가 없거나 크기가 변경된 경우 새로 생성 (각도는 보존)
+    if (!cache || Math.abs(cache.lastBounds.w - width) > 1 || Math.abs(cache.lastBounds.h - height) > 1) {
+      const prevAngle = cache?.lastAngle ?? 0;
+      const prevAngleIndex = cache?.lastAngleIndex;
+
+      cache = {
+        offscreenCanvas: createOffscreenCanvas(image, width, height),
+        lastAngle: prevAngle,  // 이전 각도 보존
+        lastAngleIndex: prevAngleIndex,  // 이전 인덱스 보존
+        lastBounds: { cx: centerX, cy: centerY, w: width, h: height }
+      };
+      feature.set('imageCache', cache);
+    }
+
+    // Polygon의 회전 각도 계산 (안정화 로직)
+    // 1. 가장 긴 변 찾기 (부동소수점 공차 적용)
+    const EPSILON = 1.0; // 1픽셀 공차
+    let maxDist = 0;
+    let angleIndex = 0;
+    const edgeLengths: number[] = [];
+
+    for (let i = 0; i < 4; i++) {
+      const [x1, y1] = pixelCoords[i];
+      const [x2, y2] = pixelCoords[(i + 1) % 4];
+      const dx = x2 - x1;
+      const dy = y2 - y1;
+      const dist = Math.sqrt(dx * dx + dy * dy);
+      edgeLengths[i] = dist;
+
+      if (dist > maxDist) {
+        maxDist = dist;
+        angleIndex = i;
+      }
+    }
+
+    // 2. 이전 선택된 변이 있고, 길이가 비슷하면 유지 (공차 적용)
+    const lastAngleIndex = cache?.lastAngleIndex;
+    if (lastAngleIndex !== undefined && edgeLengths[lastAngleIndex]) {
+      if (Math.abs(edgeLengths[lastAngleIndex] - maxDist) < EPSILON) {
+        angleIndex = lastAngleIndex;
+      }
+    }
+
+    // 3. 각도 계산
+    const [x1, y1] = pixelCoords[angleIndex];
+    const [x2, y2] = pixelCoords[(angleIndex + 1) % 4];
+    let angle = Math.atan2(y2 - y1, x2 - x1);
+
+    // 4. 180도 점프 감지 및 보정
+    if (cache?.lastAngle !== undefined) {
+      let angleDiff = angle - cache.lastAngle;
+
+      // 각도 차이를 -π ~ π 범위로 정규화
+      while (angleDiff > Math.PI) angleDiff -= 2 * Math.PI;
+      while (angleDiff < -Math.PI) angleDiff += 2 * Math.PI;
+
+      // 90도 이상 차이나면 180도 점프로 판단 → 이전 각도 유지
+      if (Math.abs(angleDiff) > Math.PI / 2) {
+        angle = cache.lastAngle;
+        angleIndex = lastAngleIndex ?? angleIndex;
+      }
+    }
+
+    // 5. 캐시 업데이트
+    cache.lastAngle = angle;
+    cache.lastAngleIndex = angleIndex;
+    cache.lastBounds = { cx: centerX, cy: centerY, w: width, h: height };
+
+    // Clipping Path 생성
+    ctx.beginPath();
+    ctx.moveTo(pixelCoords[0][0], pixelCoords[0][1]);
+    for (let i = 1; i < pixelCoords.length; i++) {
+      ctx.lineTo(pixelCoords[i][0], pixelCoords[i][1]);
+    }
+    ctx.closePath();
 
     // Fill 배경
     ctx.fillStyle = 'rgba(255, 255, 0, 0.1)';
@@ -64,17 +164,35 @@ function createImageFillStyle(
     // Clipping 적용
     ctx.clip();
 
-    // 이미지 그리기
+    // 중심점으로 이동하고 회전
+    ctx.translate(centerX, centerY);
+    ctx.rotate(angle);
+
+    // 캐시된 오프스크린 캔버스 그리기 (무거운 리샘플링 스킵)
     ctx.globalAlpha = opacity;
-    ctx.imageSmoothingEnabled = true;
-    ctx.imageSmoothingQuality = 'high';
-    ctx.drawImage(image, minX, minY, width, height);
+    ctx.drawImage(
+      cache.offscreenCanvas,
+      -width / 2,
+      -height / 2,
+      width,
+      height
+    );
+
+    // 원래 위치로 복원
+    ctx.rotate(-angle);
+    ctx.translate(-centerX, -centerY);
 
     // 테두리 그리기
     ctx.globalAlpha = 1.0;
     ctx.strokeStyle = 'rgba(255, 255, 0, 0.8)';
     ctx.lineWidth = 2;
     ctx.setLineDash([5, 5]);
+    ctx.beginPath();
+    ctx.moveTo(pixelCoords[0][0], pixelCoords[0][1]);
+    for (let i = 1; i < pixelCoords.length; i++) {
+      ctx.lineTo(pixelCoords[i][0], pixelCoords[i][1]);
+    }
+    ctx.closePath();
     ctx.stroke();
 
     ctx.restore();
@@ -92,7 +210,7 @@ function createImageFeature(
   const polygon = createPolygonFromExtent(extent);
   const feature = new Feature({ geometry: polygon });
 
-  const style = createImageFillStyle(image, polygon, opacity);
+  const style = createImageFillStyle(image, feature, polygon, opacity);
   feature.setStyle(style);
 
   // 메타데이터 저장
@@ -105,18 +223,18 @@ function createImageFeature(
 }
 
 // Feature 변형 후 Canvas Pattern 재생성
-export function refreshImageStyle(feature: Feature<Polygon>): void {
+export function refreshImageCache(feature: Feature<Polygon>): void {
   const image = feature.get('originalImage') as HTMLImageElement;
   const opacity = feature.get('opacity') as number;
   const geometry = feature.getGeometry();
 
   if (!geometry || !image) return;
 
-  // 새 Style 생성
-  const newStyle = createImageFillStyle(image, geometry, opacity);
+  // 새 Style 생성 (캐시도 함께 업데이트됨)
+  const newStyle = createImageFillStyle(image, feature, geometry, opacity);
   feature.setStyle(newStyle);
 
-  console.log('이미지 스타일 재생성 완료');
+  console.log('이미지 캐시 재생성 완료');
 }
 
 // 파일 검증
@@ -236,7 +354,7 @@ export function setImageOpacity(opacity: number): void {
     imageFeature.set('opacity', opacity);
 
     // Style 재생성
-    refreshImageStyle(imageFeature);
+    refreshImageCache(imageFeature);
 
     console.log('투명도 변경:', opacity);
   }
@@ -245,6 +363,13 @@ export function setImageOpacity(opacity: number): void {
 // 이미지 제거
 export function clearImage(map: Map, vectorSource: VectorSource): void {
   if (imageFeature) {
+    // 캐시 정리
+    const cache = imageFeature.get('imageCache') as ImageOverlayCache | undefined;
+    if (cache) {
+      cache.offscreenCanvas.width = 0;
+      cache.offscreenCanvas.height = 0;
+    }
+
     vectorSource.removeFeature(imageFeature);
     imageFeature = null;
     console.log('이미지 Feature 제거');
