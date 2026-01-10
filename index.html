@@ -61,7 +61,136 @@
     }
 
     #map.edit-mode {
-      cursor: url('/edit-cursor.svg') 16 16, auto;
+      cursor: url('/edit-cursor2.cur') 16 16, auto;
+    }
+
+    .separator {
+      width: 2px;
+      background: #1a252f;
+      height: 40px;
+      align-self: center;
+    }
+
+    .panel {
+      position: absolute;
+      top: 80px;
+      right: 20px;
+      background: white;
+      padding: 20px;
+      border-radius: 8px;
+      box-shadow: 0 4px 12px rgba(0,0,0,0.3);
+      min-width: 340px;
+      z-index: 1000;
+    }
+
+    .panel.hidden {
+      display: none;
+    }
+
+    .panel h3 {
+      margin-bottom: 20px;
+      color: #2c3e50;
+      font-size: 18px;
+      border-bottom: 2px solid #3498db;
+      padding-bottom: 10px;
+    }
+
+    .form-group {
+      margin-bottom: 15px;
+    }
+
+    .form-group label {
+      display: block;
+      font-weight: 600;
+      margin-bottom: 8px;
+      color: #2c3e50;
+      font-size: 14px;
+    }
+
+    .form-group input[type="file"] {
+      width: 100%;
+      padding: 8px;
+      border: 2px dashed #3498db;
+      border-radius: 4px;
+      background: #ecf0f1;
+      cursor: pointer;
+      font-size: 13px;
+    }
+
+    .coords-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 8px;
+    }
+
+    .coords-grid input {
+      padding: 8px;
+      border: 1px solid #bdc3c7;
+      border-radius: 4px;
+      font-size: 13px;
+    }
+
+    .coords-grid input:focus {
+      outline: none;
+      border-color: #3498db;
+    }
+
+    input[type="range"] {
+      width: 100%;
+      cursor: pointer;
+    }
+
+    .button-group {
+      display: flex;
+      gap: 10px;
+      margin-top: 20px;
+    }
+
+    .button-group button {
+      flex: 1;
+    }
+
+    button.primary {
+      background: #27ae60;
+    }
+
+    button.primary:hover {
+      background: #229954;
+    }
+
+    button.danger {
+      background: #e74c3c;
+    }
+
+    button.danger:hover {
+      background: #c0392b;
+    }
+
+    button.secondary {
+      background: #3498db;
+      width: 100%;
+      margin-bottom: 10px;
+    }
+
+    button.secondary:hover {
+      background: #2980b9;
+    }
+
+    .instructions {
+      display: block;
+      font-size: 12px;
+      color: #e67e22;
+      margin-bottom: 10px;
+      font-weight: 500;
+      text-align: center;
+    }
+
+    .instructions.hidden {
+      display: none;
+    }
+
+    #map.coordinate-picking {
+      cursor: crosshair !important;
     }
   </style>
 </head>
@@ -70,8 +199,51 @@
     <button id="drawLineBtn">선 그리기</button>
     <button id="drawPolygonBtn">다각형 그리기</button>
     <button id="editBtn">객체 편집</button>
+    <div class="separator"></div>
+    <button id="imageOverlayBtn">이미지 오버레이</button>
     <button id="clearBtn">모두 지우기</button>
   </div>
+
+  <!-- 이미지 오버레이 설정 패널 -->
+  <div id="imagePanel" class="panel hidden">
+    <h3>이미지 오버레이 설정</h3>
+
+    <div class="form-group">
+      <label>이미지 파일 (PNG, JPG):</label>
+      <input type="file" id="imageFile" accept="image/png,image/jpeg,image/jpg">
+    </div>
+
+    <div class="form-group">
+      <label>좌표 범위 (경도/위도):</label>
+
+      <!-- 지도에서 선택 버튼 -->
+      <button id="pickCoordBtn" class="secondary" type="button">
+        🎯 지도에서 선택 (2번 클릭)
+      </button>
+      <div id="pickInstructions" class="instructions hidden">
+        👆 지도에서 2개 지점을 클릭하세요 (순서 무관)
+      </div>
+
+      <!-- 좌표 입력 필드 -->
+      <div class="coords-grid">
+        <input type="number" id="minLon" placeholder="최소 경도" step="0.000001">
+        <input type="number" id="minLat" placeholder="최소 위도" step="0.000001">
+        <input type="number" id="maxLon" placeholder="최대 경도" step="0.000001">
+        <input type="number" id="maxLat" placeholder="최대 위도" step="0.000001">
+      </div>
+    </div>
+
+    <div class="form-group">
+      <label>투명도: <span id="opacityValue">100%</span></label>
+      <input type="range" id="opacitySlider" min="0" max="100" value="100">
+    </div>
+
+    <div class="button-group">
+      <button id="applyImageBtn" class="primary">이미지 적용</button>
+      <button id="clearImageBtn" class="danger">이미지 제거</button>
+    </div>
+  </div>
+
   <div id="map"></div>
   <script type="module" src="/src/main.ts"></script>
 </body>

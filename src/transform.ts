@@ -1,7 +1,9 @@
 import Map from 'ol/Map';
 import VectorSource from 'ol/source/Vector';
+// @ts-ignore - ol-ext does not have TypeScript declarations
 import Transform from 'ol-ext/interaction/Transform';
-import { Style, Stroke, Fill, Icon, RegularShape } from 'ol/style';
+import { Style, Stroke, Fill, Icon } from 'ol/style';
+import { refreshImageStyle } from './image-overlay';
 
 let transformInteraction: Transform | null = null;
 let map: Map | null = null;
@@ -37,19 +39,17 @@ export function initTransform(mapInstance: Map, vectorSource: VectorSource): voi
     }
   });
 
-  // 회전 이벤트
-  transformInteraction.on('rotating', (event: any) => {
-    console.log('객체 회전 중');
-  });
+  // 변형 완료 이벤트 (회전, 이동, 크기 조정 모두 처리)
+  transformInteraction.on('transformend', (event: any) => {
+    console.log('객체 변형 완료');
 
-  // 크기 조정 이벤트
-  transformInteraction.on('scaling', (event: any) => {
-    console.log('객체 크기 조정 중');
-  });
-
-  // 이동 이벤트
-  transformInteraction.on('translating', (event: any) => {
-    console.log('객체 이동 중');
+    // 이미지 오버레이 Feature인 경우 Canvas Pattern 재생성
+    const features = event.features.getArray();
+    features.forEach((feature: any) => {
+      if (feature.get('isImageOverlay')) {
+        refreshImageStyle(feature);
+      }
+    });
   });
 
   console.log('Transform 인터랙션 초기화 완료 (비활성 상태)');

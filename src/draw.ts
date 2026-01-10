@@ -2,7 +2,7 @@ import Map from 'ol/Map';
 import Draw from 'ol/interaction/Draw';
 import VectorSource from 'ol/source/Vector';
 import { Style, Stroke, Fill } from 'ol/style';
-import type { GeometryType } from 'ol/geom/Geometry';
+import type { Type as GeometryType } from 'ol/geom/Geometry';
 
 let currentDraw: Draw | null = null;
 
