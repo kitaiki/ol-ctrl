@@ -99,6 +99,71 @@ function createProxyPolygon(
   return feature;
 }
 
+// Polygon 중심점 계산
+function calculatePolygonCenter(coords: number[][]): [number, number] {
+  let minX = Infinity, minY = Infinity;
+  let maxX = -Infinity, maxY = -Infinity;
+
+  coords.forEach(([x, y]) => {
+    minX = Math.min(minX, x);
+    minY = Math.min(minY, y);
+    maxX = Math.max(maxX, x);
+    maxY = Math.max(maxY, y);
+  });
+
+  return [(minX + maxX) / 2, (minY + maxY) / 2];
+}
+
+// Polygon 크기 계산
+function calculatePolygonDimensions(coords: number[][]): { width: number; height: number } {
+  const [x1, y1] = coords[0];
+  const [x2, y2] = coords[1];
+  const [x3, y3] = coords[2];
+
+  const width = Math.sqrt((x2 - x1) ** 2 + (y2 - y1) ** 2);
+  const height = Math.sqrt((x3 - x2) ** 2 + (y3 - y2) ** 2);
+
+  return { width, height };
+}
+
+// Polygon 회전 각도 계산
+function calculateRotation(coords: number[][]): number {
+  const [x1, y1] = coords[0];
+  const [x2, y2] = coords[1];
+  return Math.atan2(y2 - y1, x2 - x1);
+}
+
+// Polygon 변형을 GeoImage에 동기화
+export function syncGeoImageFromPolygon(
+  polygon: Polygon,
+  geoImageSource: GeoImage
+): void {
+  const coords = polygon.getCoordinates()[0];
+
+  // 중심점
+  const center = calculatePolygonCenter(coords);
+
+  // 크기
+  const { width, height } = calculatePolygonDimensions(coords);
+
+  // 회전
+  const rotation = calculateRotation(coords);
+
+  // 스케일 (현재 크기 / 원본 크기)
+  if (!originalImage) return;
+  const scale: [number, number] = [
+    width / originalImage.naturalWidth,
+    height / originalImage.naturalHeight
+  ];
+
+  // GeoImage 동기화
+  geoImageSource.setCenter(center);
+  geoImageSource.setScale(scale);
+  geoImageSource.setRotation(rotation);
+
+  console.log('GeoImage 동기화:', { center, scale, rotation });
+}
+
 // 파일 검증
 function validateImageFile(file: File): { valid: boolean; error?: string } {
   const validTypes = ['image/png', 'image/jpeg', 'image/jpg'];

@@ -3,6 +3,8 @@ import VectorSource from 'ol/source/Vector';
 // @ts-ignore - ol-ext does not have TypeScript declarations
 import Transform from 'ol-ext/interaction/Transform';
 import { Style, Stroke, Fill, Icon } from 'ol/style';
+import { syncGeoImageFromPolygon } from './image-overlay';
+import { Polygon } from 'ol/geom';
 
 let transformInteraction: Transform | null = null;
 let map: Map | null = null;
@@ -41,7 +43,18 @@ export function initTransform(mapInstance: Map, vectorSource: VectorSource): voi
   // 변형 완료 이벤트 (회전, 이동, 크기 조정 모두 처리)
   transformInteraction.on('transformend', (event: any) => {
     console.log('객체 변형 완료');
-    // Phase 3에서 syncGeoImageFromPolygon() 추가 예정
+
+    // 이미지 오버레이 Feature인 경우 GeoImage 동기화
+    const features = event.features.getArray();
+    features.forEach((feature: any) => {
+      if (feature.get('isImageOverlay')) {
+        const geoImageSource = feature.get('geoImageSource');
+        const polygon = feature.getGeometry() as Polygon;
+        if (geoImageSource && polygon) {
+          syncGeoImageFromPolygon(polygon, geoImageSource);
+        }
+      }
+    });
   });
 
   console.log('Transform 인터랙션 초기화 완료 (비활성 상태)');
