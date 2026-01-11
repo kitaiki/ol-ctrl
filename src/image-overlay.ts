@@ -2,23 +2,17 @@ import { Map } from 'ol';
 import VectorSource from 'ol/source/Vector';
 import { Feature } from 'ol';
 import { Polygon } from 'ol/geom';
-import { Style, Stroke } from 'ol/style';
+import { Style, Stroke, Fill } from 'ol/style';
 import { fromLonLat } from 'ol/proj';
-import type { RenderFunction } from 'ol/style/Style';
+// @ts-ignore - ol-ext does not have TypeScript declarations
+import GeoImage from 'ol-ext/source/GeoImage';
+import ImageLayer from 'ol/layer/Image';
 
-// 캐시 인터페이스
-interface ImageOverlayCache {
-  offscreenCanvas: HTMLCanvasElement;
-  lastAngle: number;
-  lastAngleIndex?: number;  // 선택된 변의 인덱스
-  lastBounds: { cx: number, cy: number, w: number, h: number };
-  actualWidth: number;  // Polygon 실제 너비 (회전 무관)
-  actualHeight: number; // Polygon 실제 높이 (회전 무관)
-}
-
-// 상태 관리 (6개 → 2개로 축소)
-let imageFeature: Feature<Polygon> | null = null;
+// 상태 관리 (GeoImage 방식)
+let geoImageLayer: ImageLayer<GeoImage> | null = null;
+let proxyFeature: Feature<Polygon> | null = null;
 let originalImage: HTMLImageElement | null = null;
+let currentExtent: [number, number, number, number] | null = null;
 
 // Extent에서 Polygon 생성
 function createPolygonFromExtent(extent: [number, number, number, number]): Polygon {
@@ -33,241 +27,51 @@ function createPolygonFromExtent(extent: [number, number, number, number]): Poly
   return new Polygon([coordinates]);
 }
 
-// 오프스크린 캔버스 생성 함수
-function createOffscreenCanvas(
-  image: HTMLImageElement,
-  width: number,
-  height: number
-): HTMLCanvasElement {
-  const canvas = document.createElement('canvas');
-  canvas.width = width;
-  canvas.height = height;
-  const ctx = canvas.getContext('2d')!;
-
-  ctx.imageSmoothingEnabled = true;
-  ctx.imageSmoothingQuality = 'high';
-  ctx.drawImage(image, 0, 0, width, height);
-
-  return canvas;
-}
-
-// Polygon의 실제 크기 계산 (회전 무관)
-function getActualPolygonDimensions(
-  pixelCoords: number[][],
-  angleIndex: number
-): { width: number; height: number } {
-  // angleIndex 변에서 너비 계산
-  const [x1, y1] = pixelCoords[angleIndex];
-  const [x2, y2] = pixelCoords[(angleIndex + 1) % 4];
-  const dx1 = x2 - x1;
-  const dy1 = y2 - y1;
-  const width = Math.sqrt(dx1 * dx1 + dy1 * dy1);
-
-  // 인접한 변에서 높이 계산
-  const [x3, y3] = pixelCoords[(angleIndex + 2) % 4];
-  const dx2 = x3 - x2;
-  const dy2 = y3 - y2;
-  const height = Math.sqrt(dx2 * dx2 + dy2 * dy2);
-
-  return { width, height };
-}
-
-// Canvas Pattern으로 이미지 렌더링 (캐시 활용)
-function createImageFillStyle(
-  image: HTMLImageElement,
-  feature: Feature<Polygon>,
-  polygon: Polygon,
-  opacity: number
-): Style {
-  const renderer: RenderFunction = (coordinates, state) => {
-    const ctx = state.context as CanvasRenderingContext2D;
-    const pixelCoords = coordinates[0] as number[][];
-
-    ctx.save();
-
-    // 캐시 확인
-    let cache = feature.get('imageCache') as ImageOverlayCache | undefined;
-
-    // 픽셀 좌표에서 중심점 계산 (AABB는 중심점 계산용으로만 사용)
-    let minX = Infinity, minY = Infinity;
-    let maxX = -Infinity, maxY = -Infinity;
-
-    for (const coord of pixelCoords) {
-      minX = Math.min(minX, coord[0]);
-      minY = Math.min(minY, coord[1]);
-      maxX = Math.max(maxX, coord[0]);
-      maxY = Math.max(maxY, coord[1]);
-    }
-
-    const centerX = (minX + maxX) / 2;
-    const centerY = (minY + maxY) / 2;
-
-    // Polygon의 회전 각도 계산 (안정화 로직)
-    // 1. 가장 긴 변 찾기 (부동소수점 공차 적용)
-    const EPSILON = 1.0; // 1픽셀 공차
-    let maxDist = 0;
-    let angleIndex = 0;
-    const edgeLengths: number[] = [];
-
-    for (let i = 0; i < 4; i++) {
-      const [x1, y1] = pixelCoords[i];
-      const [x2, y2] = pixelCoords[(i + 1) % 4];
-      const dx = x2 - x1;
-      const dy = y2 - y1;
-      const dist = Math.sqrt(dx * dx + dy * dy);
-      edgeLengths[i] = dist;
-
-      if (dist > maxDist) {
-        maxDist = dist;
-        angleIndex = i;
-      }
-    }
-
-    // 2. 이전 선택된 변이 있고, 길이가 비슷하면 유지 (공차 적용)
-    const lastAngleIndex = cache?.lastAngleIndex;
-    if (lastAngleIndex !== undefined && edgeLengths[lastAngleIndex]) {
-      if (Math.abs(edgeLengths[lastAngleIndex] - maxDist) < EPSILON) {
-        angleIndex = lastAngleIndex;
-      }
-    }
-
-    // 3. 각도 계산
-    const [x1, y1] = pixelCoords[angleIndex];
-    const [x2, y2] = pixelCoords[(angleIndex + 1) % 4];
-    let angle = Math.atan2(y2 - y1, x2 - x1);
-
-    // 4. 180도 점프 감지 및 보정
-    if (cache?.lastAngle !== undefined) {
-      let angleDiff = angle - cache.lastAngle;
-
-      // 각도 차이를 -π ~ π 범위로 정규화
-      while (angleDiff > Math.PI) angleDiff -= 2 * Math.PI;
-      while (angleDiff < -Math.PI) angleDiff += 2 * Math.PI;
-
-      // 90도 이상 차이나면 180도 점프로 판단 → 이전 각도 유지
-      if (Math.abs(angleDiff) > Math.PI / 2) {
-        angle = cache.lastAngle;
-        angleIndex = lastAngleIndex ?? angleIndex;
-      }
-    }
-
-    // 5. Polygon의 실제 크기 계산 (회전 무관)
-    const actualDimensions = getActualPolygonDimensions(pixelCoords, angleIndex);
-    const actualWidth = actualDimensions.width;
-    const actualHeight = actualDimensions.height;
-
-    // 6. 캐시가 없거나 실제 크기가 변경된 경우 새로 생성
-    if (!cache ||
-        Math.abs(cache.actualWidth - actualWidth) > 1 ||
-        Math.abs(cache.actualHeight - actualHeight) > 1) {
-      const prevAngle = cache?.lastAngle ?? 0;
-      const prevAngleIndex = cache?.lastAngleIndex;
-
-      cache = {
-        offscreenCanvas: createOffscreenCanvas(image, actualWidth, actualHeight),  // 실제 Polygon 크기로 생성
-        lastAngle: prevAngle,
-        lastAngleIndex: prevAngleIndex,
-        lastBounds: { cx: centerX, cy: centerY, w: actualWidth, h: actualHeight },
-        actualWidth: actualWidth,   // 실제 크기 저장
-        actualHeight: actualHeight  // 실제 크기 저장
-      };
-      feature.set('imageCache', cache);
-    }
-
-    // 7. 캐시 업데이트 (각도와 실제 크기)
-    cache.lastAngle = angle;
-    cache.lastAngleIndex = angleIndex;
-    cache.lastBounds = { cx: centerX, cy: centerY, w: actualWidth, h: actualHeight };
-    cache.actualWidth = actualWidth;
-    cache.actualHeight = actualHeight;
-
-    // Clipping Path 생성
-    ctx.beginPath();
-    ctx.moveTo(pixelCoords[0][0], pixelCoords[0][1]);
-    for (let i = 1; i < pixelCoords.length; i++) {
-      ctx.lineTo(pixelCoords[i][0], pixelCoords[i][1]);
-    }
-    ctx.closePath();
-
-    // Fill 배경
-    ctx.fillStyle = 'rgba(255, 255, 0, 0.1)';
-    ctx.fill();
-
-    // Clipping 적용
-    ctx.clip();
-
-    // 중심점으로 이동하고 회전
-    ctx.translate(centerX, centerY);
-    ctx.rotate(angle);
-
-    // 캐시된 오프스크린 캔버스 그리기 (원본 이미지 크기 → 실제 Polygon 크기로 렌더링)
-    ctx.globalAlpha = opacity;
-    ctx.drawImage(
-      cache.offscreenCanvas,
-      -actualWidth / 2,
-      -actualHeight / 2,
-      actualWidth,
-      actualHeight
-    );
-
-    // 원래 위치로 복원
-    ctx.rotate(-angle);
-    ctx.translate(-centerX, -centerY);
-
-    // 테두리 그리기
-    ctx.globalAlpha = 1.0;
-    ctx.strokeStyle = 'rgba(255, 255, 0, 0.8)';
-    ctx.lineWidth = 2;
-    ctx.setLineDash([5, 5]);
-    ctx.beginPath();
-    ctx.moveTo(pixelCoords[0][0], pixelCoords[0][1]);
-    for (let i = 1; i < pixelCoords.length; i++) {
-      ctx.lineTo(pixelCoords[i][0], pixelCoords[i][1]);
-    }
-    ctx.closePath();
-    ctx.stroke();
-
-    ctx.restore();
-  };
-
-  return new Style({ renderer });
-}
-
-// imageFeature 생성
-function createImageFeature(
+// Extent → Center + Scale 변환
+function extentToCenterAndScale(
   extent: [number, number, number, number],
-  image: HTMLImageElement,
-  opacity: number
-): Feature<Polygon> {
+  imageWidth: number,
+  imageHeight: number
+): { center: [number, number], scale: [number, number] } {
+  // WGS84 center → Web Mercator
+  const centerLon = (extent[0] + extent[2]) / 2;
+  const centerLat = (extent[1] + extent[3]) / 2;
+  const center = fromLonLat([centerLon, centerLat]) as [number, number];
+
+  // Polygon 생성하여 실제 미터 크기 계산
   const polygon = createPolygonFromExtent(extent);
-  const feature = new Feature({ geometry: polygon });
+  const coords = polygon.getCoordinates()[0];
 
-  const style = createImageFillStyle(image, feature, polygon, opacity);
-  feature.setStyle(style);
+  const [x1, y1] = coords[0];
+  const [x2, y2] = coords[1];
+  const [x3, y3] = coords[2];
 
-  // 메타데이터 저장
-  feature.set('isImageOverlay', true);
-  feature.set('originalImage', image);
-  feature.set('opacity', opacity);
-  feature.set('extent', extent);
+  const width = Math.sqrt((x2-x1)**2 + (y2-y1)**2);
+  const height = Math.sqrt((x3-x2)**2 + (y3-y2)**2);
 
-  return feature;
+  return { center, scale: [width/imageWidth, height/imageHeight] };
 }
 
-// Feature 변형 후 Canvas Pattern 재생성
-export function refreshImageCache(feature: Feature<Polygon>): void {
-  const image = feature.get('originalImage') as HTMLImageElement;
-  const opacity = feature.get('opacity') as number;
-  const geometry = feature.getGeometry();
+// GeoImage Source 생성
+function createGeoImageSource(
+  image: HTMLImageElement,
+  extent: [number, number, number, number]
+): GeoImage {
+  const { center, scale } = extentToCenterAndScale(
+    extent,
+    image.naturalWidth,
+    image.naturalHeight
+  );
 
-  if (!geometry || !image) return;
-
-  // 새 Style 생성 (캐시도 함께 업데이트됨)
-  const newStyle = createImageFillStyle(image, feature, geometry, opacity);
-  feature.setStyle(newStyle);
-
-  console.log('이미지 캐시 재생성 완료');
+  return new GeoImage({
+    image: image,
+    imageCenter: center,
+    imageScale: scale,
+    imageRotate: 0,
+    projection: 'EPSG:3857'
+  });
 }
+
 
 // 파일 검증
 function validateImageFile(file: File): { valid: boolean; error?: string } {
@@ -351,7 +155,7 @@ export async function loadImage(
   }
 
   // 기존 이미지 제거
-  if (imageFeature) {
+  if (geoImageLayer) {
     clearImage(map, vectorSource);
   }
 
@@ -369,59 +173,64 @@ export async function loadImage(
     img.src = imageUrl;
   });
 
+  // GeoImage Source 생성
+  const geoImageSource = createGeoImageSource(image, extent);
+
+  // GeoImage Layer 생성
+  geoImageLayer = new ImageLayer({
+    source: geoImageSource,
+    opacity: opacity
+  });
+
+  // 지도에 추가 (Vector Layer 아래, index 1)
+  map.getLayers().insertAt(1, geoImageLayer);
+
   // 상태 저장
   originalImage = image;
+  currentExtent = extent;
 
-  // imageFeature 생성 및 추가
-  imageFeature = createImageFeature(extent, image, opacity);
-  vectorSource.addFeature(imageFeature);
-
-  console.log('이미지 로드 완료:', extent);
+  console.log('GeoImage 로드 완료:', extent);
 }
 
 // 투명도 설정
 export function setImageOpacity(opacity: number): void {
-  if (imageFeature && originalImage) {
-    // Feature 메타데이터 업데이트
-    imageFeature.set('opacity', opacity);
-
-    // Style 재생성
-    refreshImageCache(imageFeature);
-
+  if (geoImageLayer) {
+    geoImageLayer.setOpacity(opacity);
     console.log('투명도 변경:', opacity);
   }
 }
 
 // 이미지 제거
 export function clearImage(map: Map, vectorSource: VectorSource): void {
-  if (imageFeature) {
-    // 캐시 정리
-    const cache = imageFeature.get('imageCache') as ImageOverlayCache | undefined;
-    if (cache) {
-      cache.offscreenCanvas.width = 0;
-      cache.offscreenCanvas.height = 0;
-    }
+  // GeoImage Layer 제거
+  if (geoImageLayer) {
+    map.removeLayer(geoImageLayer);
+    geoImageLayer = null;
+    console.log('GeoImage Layer 제거');
+  }
 
-    vectorSource.removeFeature(imageFeature);
-    imageFeature = null;
-    console.log('이미지 Feature 제거');
+  // Proxy Polygon 제거 (Phase 2에서 추가 예정)
+  if (proxyFeature) {
+    vectorSource.removeFeature(proxyFeature);
+    proxyFeature = null;
+    console.log('Proxy Polygon 제거');
   }
 
   originalImage = null;
+  currentExtent = null;
 }
 
 // 이미지 존재 여부
 export function hasImage(): boolean {
-  return imageFeature !== null;
+  return geoImageLayer !== null;
 }
 
 // 현재 이미지 Extent
 export function getImageExtent(): [number, number, number, number] | null {
-  if (!imageFeature) return null;
-  return imageFeature.get('extent') as [number, number, number, number];
+  return currentExtent;
 }
 
 // Bounding Polygon 반환 (coord-picker와의 호환성)
 export function getBoundingPolygon(): Feature<Polygon> | null {
-  return imageFeature;
+  return proxyFeature;
 }
