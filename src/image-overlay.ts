@@ -12,6 +12,8 @@ interface ImageOverlayCache {
   lastAngle: number;
   lastAngleIndex?: number;  // 선택된 변의 인덱스
   lastBounds: { cx: number, cy: number, w: number, h: number };
+  actualWidth: number;  // Polygon 실제 너비 (회전 무관)
+  actualHeight: number; // Polygon 실제 높이 (회전 무관)
 }
 
 // 상태 관리 (6개 → 2개로 축소)
@@ -49,6 +51,27 @@ function createOffscreenCanvas(
   return canvas;
 }
 
+// Polygon의 실제 크기 계산 (회전 무관)
+function getActualPolygonDimensions(
+  pixelCoords: number[][],
+  angleIndex: number
+): { width: number; height: number } {
+  // angleIndex 변에서 너비 계산
+  const [x1, y1] = pixelCoords[angleIndex];
+  const [x2, y2] = pixelCoords[(angleIndex + 1) % 4];
+  const dx1 = x2 - x1;
+  const dy1 = y2 - y1;
+  const width = Math.sqrt(dx1 * dx1 + dy1 * dy1);
+
+  // 인접한 변에서 높이 계산
+  const [x3, y3] = pixelCoords[(angleIndex + 2) % 4];
+  const dx2 = x3 - x2;
+  const dy2 = y3 - y2;
+  const height = Math.sqrt(dx2 * dx2 + dy2 * dy2);
+
+  return { width, height };
+}
+
 // Canvas Pattern으로 이미지 렌더링 (캐시 활용)
 function createImageFillStyle(
   image: HTMLImageElement,
@@ -65,7 +88,7 @@ function createImageFillStyle(
     // 캐시 확인
     let cache = feature.get('imageCache') as ImageOverlayCache | undefined;
 
-    // 픽셀 좌표에서 bounding box와 중심점 계산
+    // 픽셀 좌표에서 중심점 계산 (AABB는 중심점 계산용으로만 사용)
     let minX = Infinity, minY = Infinity;
     let maxX = -Infinity, maxY = -Infinity;
 
@@ -78,22 +101,6 @@ function createImageFillStyle(
 
     const centerX = (minX + maxX) / 2;
     const centerY = (minY + maxY) / 2;
-    const width = maxX - minX;
-    const height = maxY - minY;
-
-    // 캐시가 없거나 크기가 변경된 경우 새로 생성 (각도는 보존)
-    if (!cache || Math.abs(cache.lastBounds.w - width) > 1 || Math.abs(cache.lastBounds.h - height) > 1) {
-      const prevAngle = cache?.lastAngle ?? 0;
-      const prevAngleIndex = cache?.lastAngleIndex;
-
-      cache = {
-        offscreenCanvas: createOffscreenCanvas(image, width, height),
-        lastAngle: prevAngle,  // 이전 각도 보존
-        lastAngleIndex: prevAngleIndex,  // 이전 인덱스 보존
-        lastBounds: { cx: centerX, cy: centerY, w: width, h: height }
-      };
-      feature.set('imageCache', cache);
-    }
 
     // Polygon의 회전 각도 계산 (안정화 로직)
     // 1. 가장 긴 변 찾기 (부동소수점 공차 적용)
@@ -144,10 +151,35 @@ function createImageFillStyle(
       }
     }
 
-    // 5. 캐시 업데이트
+    // 5. Polygon의 실제 크기 계산 (회전 무관)
+    const actualDimensions = getActualPolygonDimensions(pixelCoords, angleIndex);
+    const actualWidth = actualDimensions.width;
+    const actualHeight = actualDimensions.height;
+
+    // 6. 캐시가 없거나 실제 크기가 변경된 경우 새로 생성
+    if (!cache ||
+        Math.abs(cache.actualWidth - actualWidth) > 1 ||
+        Math.abs(cache.actualHeight - actualHeight) > 1) {
+      const prevAngle = cache?.lastAngle ?? 0;
+      const prevAngleIndex = cache?.lastAngleIndex;
+
+      cache = {
+        offscreenCanvas: createOffscreenCanvas(image, actualWidth, actualHeight),  // 실제 Polygon 크기로 생성
+        lastAngle: prevAngle,
+        lastAngleIndex: prevAngleIndex,
+        lastBounds: { cx: centerX, cy: centerY, w: actualWidth, h: actualHeight },
+        actualWidth: actualWidth,   // 실제 크기 저장
+        actualHeight: actualHeight  // 실제 크기 저장
+      };
+      feature.set('imageCache', cache);
+    }
+
+    // 7. 캐시 업데이트 (각도와 실제 크기)
     cache.lastAngle = angle;
     cache.lastAngleIndex = angleIndex;
-    cache.lastBounds = { cx: centerX, cy: centerY, w: width, h: height };
+    cache.lastBounds = { cx: centerX, cy: centerY, w: actualWidth, h: actualHeight };
+    cache.actualWidth = actualWidth;
+    cache.actualHeight = actualHeight;
 
     // Clipping Path 생성
     ctx.beginPath();
@@ -168,14 +200,14 @@ function createImageFillStyle(
     ctx.translate(centerX, centerY);
     ctx.rotate(angle);
 
-    // 캐시된 오프스크린 캔버스 그리기 (무거운 리샘플링 스킵)
+    // 캐시된 오프스크린 캔버스 그리기 (원본 이미지 크기 → 실제 Polygon 크기로 렌더링)
     ctx.globalAlpha = opacity;
     ctx.drawImage(
       cache.offscreenCanvas,
-      -width / 2,
-      -height / 2,
-      width,
-      height
+      -actualWidth / 2,
+      -actualHeight / 2,
+      actualWidth,
+      actualHeight
     );
 
     // 원래 위치로 복원
