@@ -72,6 +72,32 @@ function createGeoImageSource(
   });
 }
 
+// Proxy Polygon 생성 (Transform용)
+function createProxyPolygon(
+  extent: [number, number, number, number],
+  geoImageSource: GeoImage
+): Feature<Polygon> {
+  const polygon = createPolygonFromExtent(extent);
+  const feature = new Feature({ geometry: polygon });
+
+  // 반투명 노란색 스타일
+  feature.setStyle(new Style({
+    stroke: new Stroke({
+      color: 'rgba(255, 255, 0, 0.8)',
+      width: 2,
+      lineDash: [5, 5]
+    }),
+    fill: new Fill({
+      color: 'rgba(255, 255, 0, 0.1)'
+    })
+  }));
+
+  // 메타데이터 저장
+  feature.set('isImageOverlay', true);
+  feature.set('geoImageSource', geoImageSource);
+
+  return feature;
+}
 
 // 파일 검증
 function validateImageFile(file: File): { valid: boolean; error?: string } {
@@ -185,11 +211,16 @@ export async function loadImage(
   // 지도에 추가 (Vector Layer 아래, index 1)
   map.getLayers().insertAt(1, geoImageLayer);
 
+  // Proxy Polygon 생성 및 추가
+  proxyFeature = createProxyPolygon(extent, geoImageSource);
+  vectorSource.addFeature(proxyFeature);
+
   // 상태 저장
   originalImage = image;
   currentExtent = extent;
 
   console.log('GeoImage 로드 완료:', extent);
+  console.log('Proxy Polygon 추가 완료');
 }
 
 // 투명도 설정
