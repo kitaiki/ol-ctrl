@@ -148,8 +148,8 @@ export function syncGeoImageFromPolygon(
   // 크기
   const { width, height } = calculatePolygonDimensions(coords);
 
-  // 회전
-  const rotation = calculateRotation(coords);
+  // 회전 (부호 반전 - GeoImage는 반시계방향이 양수)
+  const rotation = -calculateRotation(coords);
 
   // 스케일 (현재 크기 / 원본 크기)
   const scale: [number, number] = [
