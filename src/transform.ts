@@ -31,33 +31,50 @@ export function initTransform(mapInstance: Map, vectorSource: VectorSource): voi
     stretch: true,
     scale: true,
     rotate: true,
+    hitTolerance: 5
   });
 
   // 선택 이벤트
   transformInteraction.on('select', (event: any) => {
     if (event.feature) {
-      console.log('객체 선택됨');
+      console.log('객체 선택됨:', event.feature.get('isImageOverlay') ? 'Image Overlay' : 'Normal Feature');
     }
+  });
+
+  // 변형 중 이벤트 (실시간 업데이트)
+  transformInteraction.on('rotating', (event: any) => {
+    syncImageIfNeeded(event);
+  });
+
+  transformInteraction.on('translating', (event: any) => {
+    syncImageIfNeeded(event);
+  });
+
+  transformInteraction.on('scaling', (event: any) => {
+    syncImageIfNeeded(event);
   });
 
   // 변형 완료 이벤트 (회전, 이동, 크기 조정 모두 처리)
   transformInteraction.on('transformend', (event: any) => {
     console.log('객체 변형 완료');
-
-    // 이미지 오버레이 Feature인 경우 GeoImage 동기화
-    const features = event.features.getArray();
-    features.forEach((feature: any) => {
-      if (feature.get('isImageOverlay')) {
-        const geoImageSource = feature.get('geoImageSource');
-        const polygon = feature.getGeometry() as Polygon;
-        if (geoImageSource && polygon) {
-          syncGeoImageFromPolygon(polygon, geoImageSource);
-        }
-      }
-    });
+    syncImageIfNeeded(event);
   });
 
   console.log('Transform 인터랙션 초기화 완료 (비활성 상태)');
+}
+
+// 이미지 동기화 헬퍼 함수
+function syncImageIfNeeded(event: any): void {
+  const features = event.features.getArray();
+  features.forEach((feature: any) => {
+    if (feature.get('isImageOverlay')) {
+      const geoImageSource = feature.get('geoImageSource');
+      const polygon = feature.getGeometry() as Polygon;
+      if (geoImageSource && polygon) {
+        syncGeoImageFromPolygon(polygon, geoImageSource);
+      }
+    }
+  });
 }
 
 export function startTransform(): void {

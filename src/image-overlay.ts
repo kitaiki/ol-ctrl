@@ -138,6 +138,8 @@ export function syncGeoImageFromPolygon(
   polygon: Polygon,
   geoImageSource: GeoImage
 ): void {
+  if (!originalImage || !geoImageLayer) return;
+
   const coords = polygon.getCoordinates()[0];
 
   // 중심점
@@ -150,18 +152,29 @@ export function syncGeoImageFromPolygon(
   const rotation = calculateRotation(coords);
 
   // 스케일 (현재 크기 / 원본 크기)
-  if (!originalImage) return;
   const scale: [number, number] = [
     width / originalImage.naturalWidth,
     height / originalImage.naturalHeight
   ];
 
-  // GeoImage 동기화
-  geoImageSource.setCenter(center);
-  geoImageSource.setScale(scale);
-  geoImageSource.setRotation(rotation);
+  // 새로운 GeoImage Source 생성 (재생성 방식)
+  const newGeoImageSource = new GeoImage({
+    image: originalImage,
+    imageCenter: center,
+    imageScale: scale,
+    imageRotate: rotation,
+    projection: 'EPSG:3857'
+  });
 
-  console.log('GeoImage 동기화:', { center, scale, rotation });
+  // Layer의 Source 교체
+  geoImageLayer.setSource(newGeoImageSource);
+
+  // Proxy Feature의 메타데이터도 업데이트 (다음 변형을 위해)
+  if (proxyFeature) {
+    proxyFeature.set('geoImageSource', newGeoImageSource);
+  }
+
+  console.log('GeoImage 재생성 및 동기화:', { center, scale, rotation });
 }
 
 // 파일 검증
