@@ -10,6 +10,13 @@ import {
   stopPickingCoordinates,
   isCoordinatePickingActive
 } from './coord-picker';
+import {
+  initAlignRotate,
+  startSelectMode,
+  stopSelectMode,
+  isSelectModeActive,
+  executeRotation
+} from './align-rotate';
 
 // 지도 초기화
 const { map, vectorSource } = initMap();
@@ -20,10 +27,15 @@ initTransform(map, vectorSource);
 // 좌표 선택 기능 초기화
 initCoordinatePicker(map, vectorSource);
 
+// Align Rotate 기능 초기화
+initAlignRotate(map, vectorSource);
+
 // UI 요소
 const drawLineBtn = document.getElementById('drawLineBtn') as HTMLButtonElement;
 const drawPolygonBtn = document.getElementById('drawPolygonBtn') as HTMLButtonElement;
 const editBtn = document.getElementById('editBtn') as HTMLButtonElement;
+const selectBtn = document.getElementById('selectBtn') as HTMLButtonElement;
+const rotateBtn = document.getElementById('rotateBtn') as HTMLButtonElement;
 const clearBtn = document.getElementById('clearBtn') as HTMLButtonElement;
 
 // 이미지 오버레이 UI 요소
@@ -58,6 +70,12 @@ drawLineBtn.addEventListener('click', () => {
     if (mapElement) mapElement.classList.remove('coordinate-picking');
   }
 
+  // 선택 모드 비활성화
+  if (isSelectModeActive()) {
+    stopSelectMode();
+    selectBtn.classList.remove('active');
+  }
+
   if (isDrawing()) {
     stopDrawing(map);
     drawLineBtn.classList.remove('active');
@@ -84,6 +102,12 @@ drawPolygonBtn.addEventListener('click', () => {
     pickInstructions.classList.add('hidden');
     const mapElement = map.getTargetElement();
     if (mapElement) mapElement.classList.remove('coordinate-picking');
+  }
+
+  // 선택 모드 비활성화
+  if (isSelectModeActive()) {
+    stopSelectMode();
+    selectBtn.classList.remove('active');
   }
 
   if (isDrawing()) {
@@ -113,6 +137,12 @@ editBtn.addEventListener('click', () => {
     pickInstructions.classList.add('hidden');
     const mapElement = map.getTargetElement();
     if (mapElement) mapElement.classList.remove('coordinate-picking');
+  }
+
+  // 선택 모드 비활성화
+  if (isSelectModeActive()) {
+    stopSelectMode();
+    selectBtn.classList.remove('active');
   }
 
   if (isTransformActive()) {
@@ -155,6 +185,12 @@ imageOverlayBtn.addEventListener('click', () => {
     pickInstructions.classList.add('hidden');
     const mapElement = map.getTargetElement();
     if (mapElement) mapElement.classList.remove('coordinate-picking');
+  }
+
+  // 선택 모드 비활성화
+  if (isSelectModeActive()) {
+    stopSelectMode();
+    selectBtn.classList.remove('active');
   }
 
   // 패널 토글
@@ -255,4 +291,42 @@ pickCoordBtn.addEventListener('click', () => {
 
     console.log('좌표 선택 모드 시작');
   }
+});
+
+// 선택 버튼 (기준 객체 및 회전 대상 선택)
+selectBtn.addEventListener('click', () => {
+  if (isSelectModeActive()) {
+    // 선택 모드 비활성화
+    stopSelectMode();
+    selectBtn.classList.remove('active');
+    console.log('선택 모드 종료');
+  } else {
+    // 다른 모드 비활성화
+    if (isDrawing()) {
+      stopDrawing(map);
+      drawLineBtn.classList.remove('active');
+      drawPolygonBtn.classList.remove('active');
+    }
+    if (isTransformActive()) {
+      stopTransform();
+      editBtn.classList.remove('active');
+    }
+    if (isCoordinatePickingActive()) {
+      stopPickingCoordinates();
+      pickCoordBtn.classList.remove('active');
+      pickInstructions.classList.add('hidden');
+      const mapElement = map.getTargetElement();
+      if (mapElement) mapElement.classList.remove('coordinate-picking');
+    }
+
+    // 선택 모드 활성화
+    startSelectMode();
+    selectBtn.classList.add('active');
+    console.log('선택 모드 시작 - Ctrl+클릭: 기준 면, 클릭: 회전 대상');
+  }
+});
+
+// 회전 버튼 (정렬 회전 실행)
+rotateBtn.addEventListener('click', () => {
+  executeRotation();
 });
