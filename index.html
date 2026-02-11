@@ -80,7 +80,10 @@
       border-radius: 8px;
       box-shadow: 0 4px 12px rgba(0,0,0,0.3);
       min-width: 340px;
+      max-width: 380px;
       z-index: 1000;
+      max-height: calc(100vh - 100px);
+      overflow-y: auto;
     }
 
     .panel.hidden {
@@ -192,6 +195,154 @@
     #map.coordinate-picking {
       cursor: crosshair !important;
     }
+
+    /* ===== 탭 시스템 ===== */
+    .mode-tabs {
+      display: flex;
+      gap: 0;
+      margin-bottom: 15px;
+      border-bottom: 2px solid #ecf0f1;
+    }
+
+    .mode-tabs button {
+      flex: 1;
+      padding: 8px 12px;
+      border: none;
+      border-radius: 5px 5px 0 0;
+      background: #ecf0f1;
+      color: #7f8c8d;
+      cursor: pointer;
+      font-size: 13px;
+      font-weight: 600;
+      transition: all 0.2s ease;
+    }
+
+    .mode-tabs button:hover {
+      background: #d5dbdb;
+      transform: none;
+    }
+
+    .mode-tabs button.active {
+      background: #3498db;
+      color: white;
+    }
+
+    .mode-content {
+      display: none;
+    }
+
+    .mode-content.active {
+      display: block;
+    }
+
+    /* ===== GCP 미리보기 ===== */
+    .image-preview-container {
+      border: 2px dashed #bdc3c7;
+      border-radius: 4px;
+      min-height: 80px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      margin-bottom: 10px;
+      background: #f8f9fa;
+      overflow: hidden;
+    }
+
+    .image-preview-container canvas {
+      display: block;
+      max-width: 100%;
+    }
+
+    .image-preview-placeholder {
+      color: #95a5a6;
+      font-size: 13px;
+      text-align: center;
+      padding: 20px;
+    }
+
+    /* ===== GCP 테이블 ===== */
+    #gcpTable {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 12px;
+      margin-bottom: 10px;
+    }
+
+    #gcpTable th {
+      background: #34495e;
+      color: white;
+      padding: 6px 4px;
+      text-align: center;
+      font-weight: 600;
+    }
+
+    #gcpTable td {
+      padding: 5px 4px;
+      text-align: center;
+      border-bottom: 1px solid #ecf0f1;
+    }
+
+    #gcpTable tr:hover td {
+      background: #f0f3f4;
+    }
+
+    #gcpTable .delete-btn {
+      background: #e74c3c;
+      color: white;
+      border: none;
+      border-radius: 3px;
+      padding: 2px 8px;
+      cursor: pointer;
+      font-size: 11px;
+    }
+
+    #gcpTable .delete-btn:hover {
+      background: #c0392b;
+      transform: none;
+    }
+
+    .gcp-info {
+      font-size: 12px;
+      color: #7f8c8d;
+      margin-bottom: 10px;
+      text-align: center;
+    }
+
+    .gcp-status {
+      font-size: 12px;
+      font-weight: 600;
+      text-align: center;
+      padding: 6px;
+      border-radius: 4px;
+      margin-bottom: 10px;
+    }
+
+    .gcp-status.idle {
+      color: #7f8c8d;
+      background: #f0f3f4;
+    }
+
+    .gcp-status.awaiting-pixel {
+      color: #2980b9;
+      background: #d6eaf8;
+    }
+
+    .gcp-status.awaiting-map {
+      color: #e67e22;
+      background: #fdebd0;
+    }
+
+    .gcp-btn-group {
+      display: flex;
+      gap: 8px;
+      margin-bottom: 10px;
+    }
+
+    .gcp-btn-group button {
+      flex: 1;
+      padding: 8px 10px;
+      font-size: 13px;
+    }
   </style>
 </head>
 <body>
@@ -211,31 +362,76 @@
   <div id="imagePanel" class="panel hidden">
     <h3>이미지 오버레이 설정</h3>
 
+    <!-- 공통: 파일 선택 -->
     <div class="form-group">
       <label>이미지 파일 (PNG, JPG):</label>
       <input type="file" id="imageFile" accept="image/png,image/jpeg,image/jpg">
     </div>
 
-    <div class="form-group">
-      <label>좌표 범위 (경도/위도):</label>
+    <!-- 탭 버튼 -->
+    <div class="mode-tabs">
+      <button id="extentModeTab" class="active" type="button">좌표 범위 모드</button>
+      <button id="gcpModeTab" type="button">GCP 모드</button>
+    </div>
 
-      <!-- 지도에서 선택 버튼 -->
-      <button id="pickCoordBtn" class="secondary" type="button">
-        🎯 지도에서 선택 (2번 클릭)
-      </button>
-      <div id="pickInstructions" class="instructions hidden">
-        👆 지도에서 2개 지점을 클릭하세요 (순서 무관)
-      </div>
-
-      <!-- 좌표 입력 필드 -->
-      <div class="coords-grid">
-        <input type="number" id="minLon" placeholder="최소 경도" step="0.000001">
-        <input type="number" id="minLat" placeholder="최소 위도" step="0.000001">
-        <input type="number" id="maxLon" placeholder="최대 경도" step="0.000001">
-        <input type="number" id="maxLat" placeholder="최대 위도" step="0.000001">
+    <!-- 좌표 범위 모드 -->
+    <div id="extentModeContent" class="mode-content active">
+      <div class="form-group">
+        <label>좌표 범위 (경도/위도):</label>
+        <button id="pickCoordBtn" class="secondary" type="button">
+          지도에서 선택 (2번 클릭)
+        </button>
+        <div id="pickInstructions" class="instructions hidden">
+          지도에서 2개 지점을 클릭하세요 (순서 무관)
+        </div>
+        <div class="coords-grid">
+          <input type="number" id="minLon" placeholder="최소 경도" step="0.000001">
+          <input type="number" id="minLat" placeholder="최소 위도" step="0.000001">
+          <input type="number" id="maxLon" placeholder="최대 경도" step="0.000001">
+          <input type="number" id="maxLat" placeholder="최대 위도" step="0.000001">
+        </div>
       </div>
     </div>
 
+    <!-- GCP 모드 -->
+    <div id="gcpModeContent" class="mode-content">
+      <!-- 이미지 미리보기 -->
+      <div class="form-group">
+        <label>이미지 미리보기:</label>
+        <div class="image-preview-container">
+          <canvas id="gcpPreviewCanvas" style="display:none;"></canvas>
+          <div id="gcpPreviewPlaceholder" class="image-preview-placeholder">
+            이미지 파일을 선택하면 미리보기가 표시됩니다.
+          </div>
+        </div>
+      </div>
+
+      <!-- 상태 표시 -->
+      <div id="gcpStatus" class="gcp-status idle">대기 중</div>
+
+      <!-- GCP 버튼 -->
+      <div class="gcp-btn-group">
+        <button id="addGCPBtn" class="secondary" type="button">GCP 추가</button>
+        <button id="clearGCPBtn" class="danger" type="button">GCP 초기화</button>
+      </div>
+
+      <!-- GCP 목록 -->
+      <div class="gcp-info">최소 3개의 GCP가 필요합니다.</div>
+      <table id="gcpTable">
+        <thead>
+          <tr>
+            <th>#</th>
+            <th>픽셀 (x, y)</th>
+            <th>경도, 위도</th>
+            <th></th>
+          </tr>
+        </thead>
+        <tbody id="gcpTableBody">
+        </tbody>
+      </table>
+    </div>
+
+    <!-- 공통: 투명도 + 버튼 -->
     <div class="form-group">
       <label>투명도: <span id="opacityValue">100%</span></label>
       <input type="range" id="opacitySlider" min="0" max="100" value="100">

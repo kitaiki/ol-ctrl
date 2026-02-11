@@ -7,12 +7,122 @@ import { fromLonLat } from 'ol/proj';
 // @ts-ignore - ol-ext does not have TypeScript declarations
 import GeoImage from 'ol-ext/source/GeoImage';
 import ImageLayer from 'ol/layer/Image';
+import type { GeoImageParams } from './gcp-transform';
 
 // 상태 관리 (GeoImage 방식)
 let geoImageLayer: ImageLayer<GeoImage> | null = null;
 let proxyFeature: Feature<Polygon> | null = null;
 let originalImage: HTMLImageElement | null = null;
 let currentExtent: [number, number, number, number] | null = null;
+
+// ===== 공통 헬퍼 함수 =====
+
+// 파일 검증
+function validateImageFile(file: File): { valid: boolean; error?: string } {
+  const validTypes = ['image/png', 'image/jpeg', 'image/jpg'];
+  if (!validTypes.includes(file.type)) {
+    return {
+      valid: false,
+      error: '지원하지 않는 파일 형식입니다. PNG 또는 JPG 파일을 선택하세요.'
+    };
+  }
+
+  const maxSize = 10 * 1024 * 1024; // 10MB
+  if (file.size > maxSize) {
+    return {
+      valid: false,
+      error: '파일 크기가 너무 큽니다. 10MB 이하의 파일을 선택하세요.'
+    };
+  }
+
+  return { valid: true };
+}
+
+// 파일 로딩 → DataURL
+function loadImageFile(file: File): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = (e) => {
+      if (e.target?.result) {
+        resolve(e.target.result as string);
+      } else {
+        reject(new Error('파일 읽기 실패'));
+      }
+    };
+    reader.onerror = () => reject(new Error('파일 읽기 중 오류 발생'));
+    reader.readAsDataURL(file);
+  });
+}
+
+// File → HTMLImageElement 생성
+export async function createImageElement(file: File): Promise<HTMLImageElement> {
+  const validation = validateImageFile(file);
+  if (!validation.valid) {
+    throw new Error(validation.error);
+  }
+
+  const imageUrl = await loadImageFile(file);
+  return new Promise<HTMLImageElement>((resolve, reject) => {
+    const img = new Image();
+    img.onload = () => resolve(img);
+    img.onerror = (error) => {
+      console.error('이미지 로드 실패:', error);
+      reject(new Error('이미지 로드에 실패했습니다.'));
+    };
+    img.src = imageUrl;
+  });
+}
+
+// GeoImage Layer 생성 및 지도에 추가
+function addGeoImageLayer(
+  map: Map,
+  image: HTMLImageElement,
+  params: { imageCenter: [number, number]; imageScale: [number, number]; imageRotate: number },
+  opacity: number
+): { layer: ImageLayer<GeoImage>; source: GeoImage } {
+  const source = new GeoImage({
+    image: image,
+    imageCenter: params.imageCenter,
+    imageScale: params.imageScale,
+    imageRotate: params.imageRotate,
+    projection: 'EPSG:3857'
+  });
+
+  const layer = new ImageLayer({
+    source: source,
+    opacity: opacity
+  }) as ImageLayer<GeoImage>;
+
+  map.getLayers().insertAt(1, layer);
+
+  return { layer, source };
+}
+
+// Proxy Feature 생성 (스타일 포함)
+function createProxyFeature(
+  polygon: Polygon,
+  geoImageSource: GeoImage
+): Feature<Polygon> {
+  const feature = new Feature({ geometry: polygon });
+
+  feature.setStyle(new Style({
+    stroke: new Stroke({
+      color: 'rgba(255, 255, 0, 0.8)',
+      width: 2,
+      lineDash: [5, 5]
+    }),
+    fill: new Fill({
+      color: 'rgba(255, 255, 0, 0.1)'
+    })
+  }));
+
+  feature.set('isImageOverlay', true);
+  feature.set('geoImageSource', geoImageSource);
+
+  return feature;
+}
+
+// ===== Extent 관련 함수 =====
 
 // Extent에서 Polygon 생성
 function createPolygonFromExtent(extent: [number, number, number, number]): Polygon {
@@ -33,12 +143,10 @@ function extentToCenterAndScale(
   imageWidth: number,
   imageHeight: number
 ): { center: [number, number], scale: [number, number] } {
-  // WGS84 center → Web Mercator
   const centerLon = (extent[0] + extent[2]) / 2;
   const centerLat = (extent[1] + extent[3]) / 2;
   const center = fromLonLat([centerLon, centerLat]) as [number, number];
 
-  // Polygon 생성하여 실제 미터 크기 계산
   const polygon = createPolygonFromExtent(extent);
   const coords = polygon.getCoordinates()[0];
 
@@ -52,52 +160,7 @@ function extentToCenterAndScale(
   return { center, scale: [width/imageWidth, height/imageHeight] };
 }
 
-// GeoImage Source 생성
-function createGeoImageSource(
-  image: HTMLImageElement,
-  extent: [number, number, number, number]
-): GeoImage {
-  const { center, scale } = extentToCenterAndScale(
-    extent,
-    image.naturalWidth,
-    image.naturalHeight
-  );
-
-  return new GeoImage({
-    image: image,
-    imageCenter: center,
-    imageScale: scale,
-    imageRotate: 0,
-    projection: 'EPSG:3857'
-  });
-}
-
-// Proxy Polygon 생성 (Transform용)
-function createProxyPolygon(
-  extent: [number, number, number, number],
-  geoImageSource: GeoImage
-): Feature<Polygon> {
-  const polygon = createPolygonFromExtent(extent);
-  const feature = new Feature({ geometry: polygon });
-
-  // 반투명 노란색 스타일
-  feature.setStyle(new Style({
-    stroke: new Stroke({
-      color: 'rgba(255, 255, 0, 0.8)',
-      width: 2,
-      lineDash: [5, 5]
-    }),
-    fill: new Fill({
-      color: 'rgba(255, 255, 0, 0.1)'
-    })
-  }));
-
-  // 메타데이터 저장
-  feature.set('isImageOverlay', true);
-  feature.set('geoImageSource', geoImageSource);
-
-  return feature;
-}
+// ===== 동기화 함수 =====
 
 // Polygon 중심점 계산
 function calculatePolygonCenter(coords: number[][]): [number, number] {
@@ -142,22 +205,14 @@ export function syncGeoImageFromPolygon(
 
   const coords = polygon.getCoordinates()[0];
 
-  // 중심점
   const center = calculatePolygonCenter(coords);
-
-  // 크기
   const { width, height } = calculatePolygonDimensions(coords);
-
-  // 회전 (부호 반전 - GeoImage는 반시계방향이 양수)
   const rotation = -calculateRotation(coords);
-
-  // 스케일 (현재 크기 / 원본 크기)
   const scale: [number, number] = [
     width / originalImage.naturalWidth,
     height / originalImage.naturalHeight
   ];
 
-  // 새로운 GeoImage Source 생성 (재생성 방식)
   const newGeoImageSource = new GeoImage({
     image: originalImage,
     imageCenter: center,
@@ -166,10 +221,8 @@ export function syncGeoImageFromPolygon(
     projection: 'EPSG:3857'
   });
 
-  // Layer의 Source 교체
   geoImageLayer.setSource(newGeoImageSource);
 
-  // Proxy Feature의 메타데이터도 업데이트 (다음 변형을 위해)
   if (proxyFeature) {
     proxyFeature.set('geoImageSource', newGeoImageSource);
   }
@@ -177,69 +230,26 @@ export function syncGeoImageFromPolygon(
   console.log('GeoImage 재생성 및 동기화:', { center, scale, rotation });
 }
 
-// 파일 검증
-function validateImageFile(file: File): { valid: boolean; error?: string } {
-  const validTypes = ['image/png', 'image/jpeg', 'image/jpg'];
-  if (!validTypes.includes(file.type)) {
-    return {
-      valid: false,
-      error: '지원하지 않는 파일 형식입니다. PNG 또는 JPG 파일을 선택하세요.'
-    };
-  }
+// ===== 좌표 검증 =====
 
-  const maxSize = 10 * 1024 * 1024; // 10MB
-  if (file.size > maxSize) {
-    return {
-      valid: false,
-      error: '파일 크기가 너무 큽니다. 10MB 이하의 파일을 선택하세요.'
-    };
-  }
-
-  return { valid: true };
-}
-
-// 좌표 검증
 export function validateCoordinates(
   minLon: number,
   minLat: number,
   maxLon: number,
   maxLat: number
 ): boolean {
-  // 범위 검증
   if (minLon < -180 || minLon > 180) return false;
   if (maxLon < -180 || maxLon > 180) return false;
   if (minLat < -90 || minLat > 90) return false;
   if (maxLat < -90 || maxLat > 90) return false;
-
-  // 논리적 순서 검증
   if (minLon >= maxLon) return false;
   if (minLat >= maxLat) return false;
-
   return true;
 }
 
-// 파일 로딩
-function loadImageFile(file: File): Promise<string> {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader();
+// ===== 메인 로드 함수 =====
 
-    reader.onload = (e) => {
-      if (e.target?.result) {
-        resolve(e.target.result as string);
-      } else {
-        reject(new Error('파일 읽기 실패'));
-      }
-    };
-
-    reader.onerror = () => {
-      reject(new Error('파일 읽기 중 오류 발생'));
-    };
-
-    reader.readAsDataURL(file);
-  });
-}
-
-// 이미지 로드
+// Extent 기반 이미지 로드 (기존)
 export async function loadImage(
   map: Map,
   vectorSource: VectorSource,
@@ -247,61 +257,69 @@ export async function loadImage(
   extent: [number, number, number, number],
   opacity: number = 1.0
 ): Promise<void> {
-  // 파일 검증
-  const validation = validateImageFile(file);
-  if (!validation.valid) {
-    throw new Error(validation.error);
-  }
-
-  // 좌표 검증
   if (!validateCoordinates(...extent)) {
     throw new Error('유효하지 않은 좌표입니다. 좌표 범위를 확인하세요.');
   }
 
-  // 기존 이미지 제거
   if (geoImageLayer) {
     clearImage(map, vectorSource);
   }
 
-  // 파일 로드
-  const imageUrl = await loadImageFile(file);
+  const image = await createImageElement(file);
 
-  // HTMLImageElement 생성
-  const image = await new Promise<HTMLImageElement>((resolve, reject) => {
-    const img = new Image();
-    img.onload = () => resolve(img);
-    img.onerror = (error) => {
-      console.error('이미지 로드 실패:', error);
-      reject(error);
-    };
-    img.src = imageUrl;
-  });
+  const { center, scale } = extentToCenterAndScale(extent, image.naturalWidth, image.naturalHeight);
+  const { layer, source } = addGeoImageLayer(map, image, {
+    imageCenter: center,
+    imageScale: scale,
+    imageRotate: 0
+  }, opacity);
 
-  // GeoImage Source 생성
-  const geoImageSource = createGeoImageSource(image, extent);
+  geoImageLayer = layer;
 
-  // GeoImage Layer 생성
-  geoImageLayer = new ImageLayer({
-    source: geoImageSource,
-    opacity: opacity
-  });
-
-  // 지도에 추가 (Vector Layer 아래, index 1)
-  map.getLayers().insertAt(1, geoImageLayer);
-
-  // Proxy Polygon 생성 및 추가
-  proxyFeature = createProxyPolygon(extent, geoImageSource);
+  const polygon = createPolygonFromExtent(extent);
+  proxyFeature = createProxyFeature(polygon, source);
   vectorSource.addFeature(proxyFeature);
 
-  // 상태 저장
   originalImage = image;
   currentExtent = extent;
 
-  console.log('GeoImage 로드 완료:', extent);
-  console.log('Proxy Polygon 추가 완료');
+  console.log('GeoImage 로드 완료 (extent 모드):', extent);
 }
 
-// 투명도 설정
+// GCP 기반 이미지 로드 (신규)
+export async function loadImageFromGCPParams(
+  map: Map,
+  vectorSource: VectorSource,
+  file: File,
+  geoImageParams: GeoImageParams,
+  proxyPolygon: Polygon,
+  opacity: number = 1.0
+): Promise<void> {
+  if (geoImageLayer) {
+    clearImage(map, vectorSource);
+  }
+
+  const image = await createImageElement(file);
+
+  const { layer, source } = addGeoImageLayer(map, image, {
+    imageCenter: geoImageParams.imageCenter,
+    imageScale: geoImageParams.imageScale,
+    imageRotate: geoImageParams.imageRotate
+  }, opacity);
+
+  geoImageLayer = layer;
+
+  proxyFeature = createProxyFeature(proxyPolygon, source);
+  vectorSource.addFeature(proxyFeature);
+
+  originalImage = image;
+  currentExtent = null; // GCP 모드에서는 extent 없음
+
+  console.log('GeoImage 로드 완료 (GCP 모드):', geoImageParams);
+}
+
+// ===== 상태 관리 =====
+
 export function setImageOpacity(opacity: number): void {
   if (geoImageLayer) {
     geoImageLayer.setOpacity(opacity);
@@ -309,16 +327,13 @@ export function setImageOpacity(opacity: number): void {
   }
 }
 
-// 이미지 제거
 export function clearImage(map: Map, vectorSource: VectorSource): void {
-  // GeoImage Layer 제거
   if (geoImageLayer) {
     map.removeLayer(geoImageLayer);
     geoImageLayer = null;
     console.log('GeoImage Layer 제거');
   }
 
-  // Proxy Polygon 제거 (Phase 2에서 추가 예정)
   if (proxyFeature) {
     vectorSource.removeFeature(proxyFeature);
     proxyFeature = null;
@@ -329,17 +344,14 @@ export function clearImage(map: Map, vectorSource: VectorSource): void {
   currentExtent = null;
 }
 
-// 이미지 존재 여부
 export function hasImage(): boolean {
   return geoImageLayer !== null;
 }
 
-// 현재 이미지 Extent
 export function getImageExtent(): [number, number, number, number] | null {
   return currentExtent;
 }
 
-// Bounding Polygon 반환 (coord-picker와의 호환성)
 export function getBoundingPolygon(): Feature<Polygon> | null {
   return proxyFeature;
 }
