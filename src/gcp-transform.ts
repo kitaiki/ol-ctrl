@@ -186,6 +186,45 @@ export function createProxyPolygonFromAffine(
   return new Polygon([mapCorners]);
 }
 
+// ===== Polygon → AffineMatrix 역산 =====
+
+/**
+ * Polygon 4꼭짓점에서 이미지 좌표로의 아핀 변환 행렬 계산
+ * 이미지 4꼭짓점: (0,imgH)좌하, (imgW,imgH)우하, (imgW,0)우상, (0,0)좌상
+ * → Polygon 4꼭짓점 매핑
+ *
+ * 3개 꼭짓점으로 6 DOF 아핀 해를 구함
+ */
+export function computeAffineFromPolygon(
+  coords: number[][],
+  imgW: number,
+  imgH: number
+): AffineMatrix {
+  // coords[0]=좌하, coords[1]=우하, coords[2]=우상, coords[3]=좌상
+  // 이미지 좌표: 좌하=(0,imgH), 우하=(imgW,imgH), 우상=(imgW,0)
+  const imgCorners: [number, number][] = [
+    [0, imgH],      // 좌하
+    [imgW, imgH],   // 우하
+    [imgW, 0],      // 우상
+  ];
+
+  const mapCorners: [number, number][] = [
+    [coords[0][0], coords[0][1]],
+    [coords[1][0], coords[1][1]],
+    [coords[2][0], coords[2][1]],
+  ];
+
+  // 3개 점으로 아핀 변환 계산 (Cramer's rule)
+  const A = imgCorners.map(([u, v]) => [u, v, 1]);
+  const bx = mapCorners.map(([x]) => x);
+  const by = mapCorners.map(([, y]) => y);
+
+  const [a, b, tx] = solveCramer3(A, bx);
+  const [c, d, ty] = solveCramer3(A, by);
+
+  return { a, b, tx, c, d, ty };
+}
+
 // ===== 검증 함수 =====
 
 export interface ValidationResult {

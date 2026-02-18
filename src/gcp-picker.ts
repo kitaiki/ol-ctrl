@@ -21,6 +21,16 @@ let canvasEl: HTMLCanvasElement | null = null;
 let currentImage: HTMLImageElement | null = null;
 let canvasScale = 1;
 
+// 줌/패닝 관련
+let zoomLevel = 1;
+let panX = 0;
+let panY = 0;
+let isPanning = false;
+let panStartX = 0;
+let panStartY = 0;
+let baseWidth = 0;
+let baseHeight = 0;
+
 // 현재 피킹 중인 GCP의 임시 픽셀 좌표
 let pendingPixel: [number, number] | null = null;
 
@@ -50,6 +60,11 @@ export function initGCPPicker(
 
   if (canvasEl) {
     canvasEl.addEventListener('click', handleCanvasClick);
+    canvasEl.addEventListener('wheel', handleWheel, { passive: false });
+    canvasEl.addEventListener('mousedown', handleMouseDown);
+    canvasEl.addEventListener('mousemove', handleMouseMove);
+    canvasEl.addEventListener('mouseup', handleMouseUp);
+    canvasEl.addEventListener('mouseleave', handleMouseUp);
   }
 }
 
@@ -63,15 +78,22 @@ export function updateImagePreview(image: HTMLImageElement): void {
   if (!container) return;
 
   const maxWidth = container.clientWidth || 300;
-  const maxHeight = 200;
+  const maxHeight = 400;
 
   // 이미지를 컨테이너에 맞게 축소
   const widthRatio = maxWidth / image.naturalWidth;
   const heightRatio = maxHeight / image.naturalHeight;
   canvasScale = Math.min(widthRatio, heightRatio, 1);
 
-  canvasEl.width = image.naturalWidth * canvasScale;
-  canvasEl.height = image.naturalHeight * canvasScale;
+  baseWidth = image.naturalWidth * canvasScale;
+  baseHeight = image.naturalHeight * canvasScale;
+  canvasEl.width = baseWidth;
+  canvasEl.height = baseHeight;
+
+  // 새 이미지 로드 시 줌/패닝 초기화
+  zoomLevel = 1;
+  panX = 0;
+  panY = 0;
 
   redrawCanvas();
 }
@@ -82,39 +104,108 @@ function redrawCanvas(): void {
   const ctx = canvasEl.getContext('2d');
   if (!ctx) return;
 
-  // 이미지 그리기
+  // 캔버스 전체 클리어
   ctx.clearRect(0, 0, canvasEl.width, canvasEl.height);
-  ctx.drawImage(currentImage, 0, 0, canvasEl.width, canvasEl.height);
 
-  // GCP 마커 그리기
+  // 줌 + 패닝 변환 적용
+  ctx.save();
+  ctx.translate(panX, panY);
+  ctx.scale(zoomLevel, zoomLevel);
+
+  // 이미지 그리기
+  ctx.drawImage(currentImage, 0, 0, baseWidth, baseHeight);
+
+  // GCP 마커 그리기 (마커 크기는 줌 레벨에 반비례하여 일정하게)
+  const markerRadius = 8 / zoomLevel;
+  const fontSize = 10 / zoomLevel;
+  const lineWidth = 2 / zoomLevel;
+
   gcpList.forEach((gcp, index) => {
     const cx = gcp.pixel[0] * canvasScale;
     const cy = gcp.pixel[1] * canvasScale;
 
-    // 원
     ctx.beginPath();
-    ctx.arc(cx, cy, 8, 0, Math.PI * 2);
+    ctx.arc(cx, cy, markerRadius, 0, Math.PI * 2);
     ctx.fillStyle = 'rgba(255, 0, 0, 0.7)';
     ctx.fill();
     ctx.strokeStyle = 'white';
-    ctx.lineWidth = 2;
+    ctx.lineWidth = lineWidth;
     ctx.stroke();
 
-    // 번호
     ctx.fillStyle = 'white';
-    ctx.font = 'bold 10px sans-serif';
+    ctx.font = `bold ${fontSize}px sans-serif`;
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
     ctx.fillText(String(index + 1), cx, cy);
   });
 
-  // 피킹 상태 표시
+  ctx.restore();
+
+  // 피킹 상태 표시 (줌 변환 밖에서 그려서 항상 캔버스 테두리에 표시)
   if (state === 'awaiting_pixel') {
     ctx.strokeStyle = 'rgba(0, 150, 255, 0.5)';
     ctx.lineWidth = 3;
     ctx.setLineDash([5, 5]);
     ctx.strokeRect(0, 0, canvasEl.width, canvasEl.height);
     ctx.setLineDash([]);
+  }
+}
+
+// ===== Canvas 클릭 핸들러 =====
+
+// ===== 줌/패닝 핸들러 =====
+
+function handleWheel(evt: WheelEvent): void {
+  if (!canvasEl) return;
+  evt.preventDefault();
+
+  const rect = canvasEl.getBoundingClientRect();
+  const mouseX = evt.clientX - rect.left;
+  const mouseY = evt.clientY - rect.top;
+
+  // 줌 전 마우스 위치의 이미지 좌표
+  const imgXBefore = (mouseX - panX) / zoomLevel;
+  const imgYBefore = (mouseY - panY) / zoomLevel;
+
+  // 줌 레벨 변경
+  const zoomFactor = evt.deltaY < 0 ? 1.15 : 1 / 1.15;
+  const newZoom = Math.min(Math.max(zoomLevel * zoomFactor, 0.5), 10);
+  zoomLevel = newZoom;
+
+  // 줌 후 마우스 위치가 같은 이미지 좌표를 가리키도록 패닝 조정
+  panX = mouseX - imgXBefore * zoomLevel;
+  panY = mouseY - imgYBefore * zoomLevel;
+
+  redrawCanvas();
+}
+
+function handleMouseDown(evt: MouseEvent): void {
+  if (!canvasEl) return;
+
+  // 중간 버튼이거나, awaiting_pixel이 아닌 상태에서 좌클릭 + 줌인 상태일 때 패닝
+  const shouldPan = evt.button === 1 || (state !== 'awaiting_pixel' && zoomLevel > 1);
+  if (!shouldPan) return;
+
+  isPanning = true;
+  panStartX = evt.clientX - panX;
+  panStartY = evt.clientY - panY;
+  canvasEl.style.cursor = 'grabbing';
+  evt.preventDefault();
+}
+
+function handleMouseMove(evt: MouseEvent): void {
+  if (!isPanning || !canvasEl) return;
+
+  panX = evt.clientX - panStartX;
+  panY = evt.clientY - panStartY;
+  redrawCanvas();
+}
+
+function handleMouseUp(): void {
+  if (!isPanning) return;
+  isPanning = false;
+  if (canvasEl) {
+    canvasEl.style.cursor = state === 'awaiting_pixel' ? 'crosshair' : (zoomLevel > 1 ? 'grab' : 'default');
   }
 }
 
@@ -127,9 +218,9 @@ function handleCanvasClick(evt: MouseEvent): void {
   const canvasX = evt.clientX - rect.left;
   const canvasY = evt.clientY - rect.top;
 
-  // canvas 좌표 → 원본 이미지 픽셀 좌표
-  const pixelX = Math.round(canvasX / canvasScale);
-  const pixelY = Math.round(canvasY / canvasScale);
+  // canvas 좌표 → 원본 이미지 픽셀 좌표 (줌/패닝 역변환)
+  const pixelX = Math.round((canvasX - panX) / zoomLevel / canvasScale);
+  const pixelY = Math.round((canvasY - panY) / zoomLevel / canvasScale);
 
   // 범위 체크
   if (pixelX < 0 || pixelX > currentImage.naturalWidth ||
@@ -143,23 +234,34 @@ function handleCanvasClick(evt: MouseEvent): void {
   // 미리보기 업데이트 (임시 마커)
   redrawCanvas();
 
-  // 임시 마커 그리기 (파란색)
+  // 임시 마커 그리기 (파란색, 줌 변환 적용)
   const ctx = canvasEl.getContext('2d');
   if (ctx) {
     const cx = pixelX * canvasScale;
     const cy = pixelY * canvasScale;
+
+    ctx.save();
+    ctx.translate(panX, panY);
+    ctx.scale(zoomLevel, zoomLevel);
+
+    const markerRadius = 8 / zoomLevel;
+    const fontSize = 10 / zoomLevel;
+    const lineWidth = 2 / zoomLevel;
+
     ctx.beginPath();
-    ctx.arc(cx, cy, 8, 0, Math.PI * 2);
+    ctx.arc(cx, cy, markerRadius, 0, Math.PI * 2);
     ctx.fillStyle = 'rgba(0, 100, 255, 0.7)';
     ctx.fill();
     ctx.strokeStyle = 'white';
-    ctx.lineWidth = 2;
+    ctx.lineWidth = lineWidth;
     ctx.stroke();
     ctx.fillStyle = 'white';
-    ctx.font = 'bold 10px sans-serif';
+    ctx.font = `bold ${fontSize}px sans-serif`;
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
     ctx.fillText('?', cx, cy);
+
+    ctx.restore();
   }
 
   console.log(`GCP 픽셀 좌표 선택: [${pixelX}, ${pixelY}] → 지도에서 대응 좌표를 클릭하세요.`);
@@ -267,7 +369,11 @@ function setState(newState: PickerState): void {
 
   // Canvas 커서
   if (canvasEl) {
-    canvasEl.style.cursor = newState === 'awaiting_pixel' ? 'crosshair' : 'default';
+    if (newState === 'awaiting_pixel') {
+      canvasEl.style.cursor = 'crosshair';
+    } else {
+      canvasEl.style.cursor = zoomLevel > 1 ? 'grab' : 'default';
+    }
   }
 
   onStateChanged?.(newState);

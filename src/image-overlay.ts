@@ -7,13 +7,16 @@ import { fromLonLat } from 'ol/proj';
 // @ts-ignore - ol-ext does not have TypeScript declarations
 import GeoImage from 'ol-ext/source/GeoImage';
 import ImageLayer from 'ol/layer/Image';
-import type { GeoImageParams } from './gcp-transform';
+import ImageCanvasSource from 'ol/source/ImageCanvas';
+import type { AffineMatrix } from './gcp-transform';
+import { computeAffineFromPolygon } from './gcp-transform';
 
-// 상태 관리 (GeoImage 방식)
-let geoImageLayer: ImageLayer<GeoImage> | null = null;
+// 상태 관리
+let geoImageLayer: ImageLayer<any> | null = null;
 let proxyFeature: Feature<Polygon> | null = null;
 let originalImage: HTMLImageElement | null = null;
 let currentExtent: [number, number, number, number] | null = null;
+let currentAffine: AffineMatrix | null = null; // GCP 모드용 아핀 행렬
 
 // ===== 공통 헬퍼 함수 =====
 
@@ -98,10 +101,66 @@ function addGeoImageLayer(
   return { layer, source };
 }
 
+// ImageCanvas 기반 레이어 생성 (GCP 모드 - affine 직접 적용)
+function addAffineImageLayer(
+  map: Map,
+  image: HTMLImageElement,
+  affine: AffineMatrix,
+  opacity: number
+): ImageLayer<ImageCanvasSource> {
+  const source = createAffineImageCanvasSource(image, affine);
+
+  const layer = new ImageLayer({
+    source: source,
+    opacity: opacity
+  });
+
+  map.getLayers().insertAt(1, layer);
+  return layer;
+}
+
+function createAffineImageCanvasSource(
+  image: HTMLImageElement,
+  affine: AffineMatrix
+): ImageCanvasSource {
+  return new ImageCanvasSource({
+    canvasFunction: (extent, resolution, pixelRatio, size) => {
+      const canvas = document.createElement('canvas');
+      canvas.width = size[0];
+      canvas.height = size[1];
+      const ctx = canvas.getContext('2d')!;
+
+      // extent → pixel 변환 계수
+      const originX = extent[0];
+      const originY = extent[3]; // top (y축 반전)
+      const pxPerMapUnit = pixelRatio / resolution;
+
+      // affine: pixel(u,v) → map(x,y)
+      // mapX = a*u + b*v + tx
+      // mapY = c*u + d*v + ty
+      // screen 좌표: screenX = (mapX - originX) * pxPerMapUnit
+      //              screenY = (originY - mapY) * pxPerMapUnit (y축 반전)
+      const { a, b, tx, c, d, ty } = affine;
+      ctx.setTransform(
+        a * pxPerMapUnit,           // a': x scale
+        -c * pxPerMapUnit,          // b': y→screen 변환 (y축 반전)
+        b * pxPerMapUnit,           // c': x에서 y로
+        -d * pxPerMapUnit,          // d': y scale (y축 반전)
+        (tx - originX) * pxPerMapUnit,  // e': x translation
+        (originY - ty) * pxPerMapUnit   // f': y translation
+      );
+
+      ctx.drawImage(image, 0, 0);
+      return canvas;
+    },
+    projection: 'EPSG:3857'
+  });
+}
+
 // Proxy Feature 생성 (스타일 포함)
 function createProxyFeature(
   polygon: Polygon,
-  geoImageSource: GeoImage
+  source: any
 ): Feature<Polygon> {
   const feature = new Feature({ geometry: polygon });
 
@@ -117,7 +176,7 @@ function createProxyFeature(
   }));
 
   feature.set('isImageOverlay', true);
-  feature.set('geoImageSource', geoImageSource);
+  feature.set('geoImageSource', source);
 
   return feature;
 }
@@ -196,38 +255,56 @@ function calculateRotation(coords: number[][]): number {
   return Math.atan2(y2 - y1, x2 - x1);
 }
 
-// Polygon 변형을 GeoImage에 동기화
+// Polygon 변형을 이미지에 동기화
 export function syncGeoImageFromPolygon(
   polygon: Polygon,
-  geoImageSource: GeoImage
+  _geoImageSource: any
 ): void {
   if (!originalImage || !geoImageLayer) return;
 
   const coords = polygon.getCoordinates()[0];
 
-  const center = calculatePolygonCenter(coords);
-  const { width, height } = calculatePolygonDimensions(coords);
-  const rotation = -calculateRotation(coords);
-  const scale: [number, number] = [
-    width / originalImage.naturalWidth,
-    height / originalImage.naturalHeight
-  ];
+  if (currentAffine) {
+    // GCP 모드: Polygon 4꼭짓점에서 새 AffineMatrix 역산
+    const imgW = originalImage.naturalWidth;
+    const imgH = originalImage.naturalHeight;
+    const newAffine = computeAffineFromPolygon(coords, imgW, imgH);
+    currentAffine = newAffine;
 
-  const newGeoImageSource = new GeoImage({
-    image: originalImage,
-    imageCenter: center,
-    imageScale: scale,
-    imageRotate: rotation,
-    projection: 'EPSG:3857'
-  });
+    const newSource = createAffineImageCanvasSource(originalImage, newAffine);
+    geoImageLayer.setSource(newSource);
 
-  geoImageLayer.setSource(newGeoImageSource);
+    if (proxyFeature) {
+      proxyFeature.set('geoImageSource', newSource);
+    }
 
-  if (proxyFeature) {
-    proxyFeature.set('geoImageSource', newGeoImageSource);
+    console.log('ImageCanvas 동기화 (affine):', newAffine);
+  } else {
+    // Extent 모드: 기존 GeoImage 방식
+    const center = calculatePolygonCenter(coords);
+    const { width, height } = calculatePolygonDimensions(coords);
+    const rotation = -calculateRotation(coords);
+    const scale: [number, number] = [
+      width / originalImage.naturalWidth,
+      height / originalImage.naturalHeight
+    ];
+
+    const newGeoImageSource = new GeoImage({
+      image: originalImage,
+      imageCenter: center,
+      imageScale: scale,
+      imageRotate: rotation,
+      projection: 'EPSG:3857'
+    });
+
+    geoImageLayer.setSource(newGeoImageSource);
+
+    if (proxyFeature) {
+      proxyFeature.set('geoImageSource', newGeoImageSource);
+    }
+
+    console.log('GeoImage 재생성 및 동기화:', { center, scale, rotation });
   }
-
-  console.log('GeoImage 재생성 및 동기화:', { center, scale, rotation });
 }
 
 // ===== 좌표 검증 =====
@@ -282,16 +359,17 @@ export async function loadImage(
 
   originalImage = image;
   currentExtent = extent;
+  currentAffine = null; // Extent 모드에서는 affine 없음
 
   console.log('GeoImage 로드 완료 (extent 모드):', extent);
 }
 
-// GCP 기반 이미지 로드 (신규)
+// GCP 기반 이미지 로드 (ImageCanvas 사용)
 export async function loadImageFromGCPParams(
   map: Map,
   vectorSource: VectorSource,
   file: File,
-  geoImageParams: GeoImageParams,
+  affine: AffineMatrix,
   proxyPolygon: Polygon,
   opacity: number = 1.0
 ): Promise<void> {
@@ -301,21 +379,18 @@ export async function loadImageFromGCPParams(
 
   const image = await createImageElement(file);
 
-  const { layer, source } = addGeoImageLayer(map, image, {
-    imageCenter: geoImageParams.imageCenter,
-    imageScale: geoImageParams.imageScale,
-    imageRotate: geoImageParams.imageRotate
-  }, opacity);
-
+  const layer = addAffineImageLayer(map, image, affine, opacity);
   geoImageLayer = layer;
+  currentAffine = affine;
 
+  const source = layer.getSource();
   proxyFeature = createProxyFeature(proxyPolygon, source);
   vectorSource.addFeature(proxyFeature);
 
   originalImage = image;
   currentExtent = null; // GCP 모드에서는 extent 없음
 
-  console.log('GeoImage 로드 완료 (GCP 모드):', geoImageParams);
+  console.log('ImageCanvas 로드 완료 (GCP 모드, affine 직접 적용):', affine);
 }
 
 // ===== 상태 관리 =====
@@ -342,6 +417,7 @@ export function clearImage(map: Map, vectorSource: VectorSource): void {
 
   originalImage = null;
   currentExtent = null;
+  currentAffine = null;
 }
 
 export function hasImage(): boolean {

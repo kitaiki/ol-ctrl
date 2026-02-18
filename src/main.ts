@@ -31,7 +31,6 @@ import {
 } from './gcp-picker';
 import {
   solveAffineTransform,
-  decomposeAffineToGeoImageParams,
   createProxyPolygonFromAffine,
   validateGCPs
 } from './gcp-transform';
@@ -382,17 +381,15 @@ applyImageBtn.addEventListener('click', async () => {
 
       // 아핀 변환 계산
       const affine = solveAffineTransform(gcps);
-      const geoImageParams = decomposeAffineToGeoImageParams(affine, img.naturalWidth, img.naturalHeight);
       const proxyPolygon = createProxyPolygonFromAffine(affine, img.naturalWidth, img.naturalHeight);
 
       console.log('아핀 변환 결과:', affine);
-      console.log('GeoImage 파라미터:', geoImageParams);
 
       // GCP 마커 제거 (이미지 적용 후)
       clearGCPs();
       updateGCPTable([]);
 
-      await loadImageFromGCPParams(map, vectorSource, file, geoImageParams, proxyPolygon, opacity);
+      await loadImageFromGCPParams(map, vectorSource, file, affine, proxyPolygon, opacity);
       alert('GCP 기반 이미지가 성공적으로 로드되었습니다.');
     }
 
