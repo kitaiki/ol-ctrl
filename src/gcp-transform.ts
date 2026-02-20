@@ -24,6 +24,23 @@ export interface GeoImageParams {
   imageRotate: number;
 }
 
+export type AffineFitStatus = 'UNVERIFIABLE_3PT' | 'VERIFIED';
+
+export interface AffineResidual {
+  id: string;
+  errorMeters: number;
+  observed: [number, number];
+  predicted: [number, number];
+}
+
+export interface AffineFitReport {
+  fitStatus: AffineFitStatus;
+  message: string;
+  rmseMeters: number | null;
+  maxErrorMeters: number | null;
+  residuals: AffineResidual[];
+}
+
 // ===== 아핀 변환 계산 =====
 
 /**
@@ -167,12 +184,13 @@ export function createProxyPolygonFromAffine(
 ): Polygon {
   const { a, b, tx, c, d, ty } = affine;
 
-  // 이미지 4꼭짓점 (좌하, 우하, 우상, 좌상)
+  // 이미지 4꼭짓점 (좌상, 우상, 우하, 좌하)
+  // 픽셀 좌표계는 좌상단 원점(0,0), y-down 기준
   const corners: [number, number][] = [
-    [0, imgH],      // 좌하
-    [imgW, imgH],   // 우하
-    [imgW, 0],      // 우상
     [0, 0],         // 좌상
+    [imgW, 0],      // 우상
+    [imgW, imgH],   // 우하
+    [0, imgH],      // 좌하
   ];
 
   const mapCorners = corners.map(([u, v]) => [
@@ -184,6 +202,74 @@ export function createProxyPolygonFromAffine(
   mapCorners.push([...mapCorners[0]]);
 
   return new Polygon([mapCorners]);
+}
+
+export function applyAffine(
+  affine: AffineMatrix,
+  u: number,
+  v: number
+): [number, number] {
+  const { a, b, tx, c, d, ty } = affine;
+  return [
+    a * u + b * v + tx,
+    c * u + d * v + ty
+  ];
+}
+
+export function invertAffine(affine: AffineMatrix): AffineMatrix {
+  const { a, b, tx, c, d, ty } = affine;
+  const det = a * d - b * c;
+  if (Math.abs(det) < 1e-12) {
+    throw new Error('역행렬을 계산할 수 없는 아핀 행렬입니다.');
+  }
+
+  const ia = d / det;
+  const ib = -b / det;
+  const ic = -c / det;
+  const id = a / det;
+  const itx = -(ia * tx + ib * ty);
+  const ity = -(ic * tx + id * ty);
+
+  return { a: ia, b: ib, tx: itx, c: ic, d: id, ty: ity };
+}
+
+export function computeAffineFitReport(
+  gcps: GCPPoint[],
+  affine: AffineMatrix
+): AffineFitReport {
+  if (gcps.length <= 3) {
+    return {
+      fitStatus: 'UNVERIFIABLE_3PT',
+      message: '3점은 모델 적합성 검증이 불가합니다. 최소 4점 이상을 권장합니다.',
+      rmseMeters: null,
+      maxErrorMeters: null,
+      residuals: []
+    };
+  }
+
+  const residuals: AffineResidual[] = gcps.map(gcp => {
+    const predicted = applyAffine(affine, gcp.pixel[0], gcp.pixel[1]);
+    const dx = predicted[0] - gcp.map[0];
+    const dy = predicted[1] - gcp.map[1];
+    return {
+      id: gcp.id,
+      errorMeters: Math.sqrt(dx * dx + dy * dy),
+      observed: gcp.map,
+      predicted
+    };
+  });
+
+  const sse = residuals.reduce((sum, r) => sum + r.errorMeters ** 2, 0);
+  const rmseMeters = Math.sqrt(sse / residuals.length);
+  const maxErrorMeters = residuals.reduce((max, r) => Math.max(max, r.errorMeters), 0);
+
+  return {
+    fitStatus: 'VERIFIED',
+    message: '잔차가 계산되었습니다.',
+    rmseMeters,
+    maxErrorMeters,
+    residuals
+  };
 }
 
 // ===== 검증 함수 =====

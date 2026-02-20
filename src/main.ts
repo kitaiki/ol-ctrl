@@ -3,7 +3,7 @@ import 'ol-ext/dist/ol-ext.css';
 import { initMap } from './map';
 import { startDrawing, stopDrawing, isDrawing } from './draw';
 import { initTransform, startTransform, stopTransform, isTransformActive } from './transform';
-import { loadImageFromGCPParams, clearImage, setImageOpacity, hasImage, createImageElement } from './image-overlay';
+import { loadImageFromAffineParams, clearImage, setImageOpacity, hasImage, createImageElement } from './image-overlay';
 import {
   initAlignRotate,
   startSelectMode,
@@ -25,9 +25,9 @@ import {
 } from './gcp-picker';
 import {
   solveAffineTransform,
-  decomposeAffineToGeoImageParams,
   createProxyPolygonFromAffine,
-  validateGCPs
+  validateGCPs,
+  computeAffineFitReport
 } from './gcp-transform';
 import type { GCPPoint } from './gcp-transform';
 
@@ -289,17 +289,37 @@ applyImageBtn.addEventListener('click', async () => {
 
     // 아핀 변환 계산
     const affine = solveAffineTransform(gcps);
-    const geoImageParams = decomposeAffineToGeoImageParams(affine, img.naturalWidth, img.naturalHeight);
     const proxyPolygon = createProxyPolygonFromAffine(affine, img.naturalWidth, img.naturalHeight);
+    const fitReport = computeAffineFitReport(gcps, affine);
 
     console.log('아핀 변환 결과:', affine);
-    console.log('GeoImage 파라미터:', geoImageParams);
+    console.log('Affine 정합 리포트:', fitReport);
+
+    if (fitReport.fitStatus === 'UNVERIFIABLE_3PT') {
+      const proceed = confirm(
+        '3점은 검증 불가(잔차 미산정)입니다.\\n최소 4점 이상을 권장합니다.\\n\\n계속 진행하시겠습니까?'
+      );
+      if (!proceed) return;
+    } else {
+      const warnings: string[] = [];
+      if ((fitReport.rmseMeters ?? 0) > 1.5) {
+        warnings.push(`RMSE 오차가 ${fitReport.rmseMeters!.toFixed(2)}m 입니다.`);
+      }
+      if ((fitReport.maxErrorMeters ?? 0) > 3.0) {
+        warnings.push(`최대 오차가 ${fitReport.maxErrorMeters!.toFixed(2)}m 입니다.`);
+      }
+
+      if (warnings.length > 0) {
+        const proceed = confirm('GCP 정합 경고:\\n\\n' + warnings.join('\\n') + '\\n\\n계속 진행하시겠습니까?');
+        if (!proceed) return;
+      }
+    }
 
     // GCP 마커 제거 (이미지 적용 후)
     clearGCPs();
     updateGCPTable([]);
 
-    await loadImageFromGCPParams(map, vectorSource, file, geoImageParams, proxyPolygon, opacity);
+    await loadImageFromAffineParams(map, vectorSource, file, affine, proxyPolygon, opacity);
     alert('GCP 기반 이미지가 성공적으로 로드되었습니다.');
 
   } catch (error) {

@@ -3,21 +3,16 @@ import VectorSource from 'ol/source/Vector';
 import { Feature } from 'ol';
 import { Polygon } from 'ol/geom';
 import { Style, Stroke, Fill } from 'ol/style';
-import { fromLonLat } from 'ol/proj';
-// @ts-ignore - ol-ext does not have TypeScript declarations
-import GeoImage from 'ol-ext/source/GeoImage';
 import ImageLayer from 'ol/layer/Image';
-import type { GeoImageParams } from './gcp-transform';
+import ImageCanvasSource from 'ol/source/ImageCanvas';
+import type { AffineMatrix, GCPPoint, GeoImageParams } from './gcp-transform';
+import { invertAffine, applyAffine, solveAffineTransform } from './gcp-transform';
 
-// 상태 관리 (GeoImage 방식)
-let geoImageLayer: ImageLayer<GeoImage> | null = null;
+let imageLayer: ImageLayer<ImageCanvasSource> | null = null;
 let proxyFeature: Feature<Polygon> | null = null;
 let originalImage: HTMLImageElement | null = null;
-let currentExtent: [number, number, number, number] | null = null;
+let currentAffine: AffineMatrix | null = null;
 
-// ===== 공통 헬퍼 함수 =====
-
-// 파일 검증
 function validateImageFile(file: File): { valid: boolean; error?: string } {
   const validTypes = ['image/png', 'image/jpeg', 'image/jpg'];
   if (!validTypes.includes(file.type)) {
@@ -27,7 +22,7 @@ function validateImageFile(file: File): { valid: boolean; error?: string } {
     };
   }
 
-  const maxSize = 10 * 1024 * 1024; // 10MB
+  const maxSize = 10 * 1024 * 1024;
   if (file.size > maxSize) {
     return {
       valid: false,
@@ -38,7 +33,6 @@ function validateImageFile(file: File): { valid: boolean; error?: string } {
   return { valid: true };
 }
 
-// 파일 로딩 → DataURL
 function loadImageFile(file: File): Promise<string> {
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
@@ -54,7 +48,6 @@ function loadImageFile(file: File): Promise<string> {
   });
 }
 
-// File → HTMLImageElement 생성
 export async function createImageElement(file: File): Promise<HTMLImageElement> {
   const validation = validateImageFile(file);
   if (!validation.valid) {
@@ -73,36 +66,7 @@ export async function createImageElement(file: File): Promise<HTMLImageElement> 
   });
 }
 
-// GeoImage Layer 생성 및 지도에 추가
-function addGeoImageLayer(
-  map: Map,
-  image: HTMLImageElement,
-  params: { imageCenter: [number, number]; imageScale: [number, number]; imageRotate: number },
-  opacity: number
-): { layer: ImageLayer<GeoImage>; source: GeoImage } {
-  const source = new GeoImage({
-    image: image,
-    imageCenter: params.imageCenter,
-    imageScale: params.imageScale,
-    imageRotate: params.imageRotate,
-    projection: 'EPSG:3857'
-  });
-
-  const layer = new ImageLayer({
-    source: source,
-    opacity: opacity
-  }) as ImageLayer<GeoImage>;
-
-  map.getLayers().insertAt(1, layer);
-
-  return { layer, source };
-}
-
-// Proxy Feature 생성 (스타일 포함)
-function createProxyFeature(
-  polygon: Polygon,
-  geoImageSource: GeoImage
-): Feature<Polygon> {
+function createProxyFeature(polygon: Polygon): Feature<Polygon> {
   const feature = new Feature({ geometry: polygon });
 
   feature.setStyle(new Style({
@@ -117,176 +81,188 @@ function createProxyFeature(
   }));
 
   feature.set('isImageOverlay', true);
-  feature.set('geoImageSource', geoImageSource);
-
   return feature;
 }
 
-// ===== Extent 관련 함수 =====
-
-// Extent에서 Polygon 생성
-function createPolygonFromExtent(extent: [number, number, number, number]): Polygon {
-  const [minLon, minLat, maxLon, maxLat] = extent;
-  const coordinates = [
-    fromLonLat([minLon, minLat]),
-    fromLonLat([maxLon, minLat]),
-    fromLonLat([maxLon, maxLat]),
-    fromLonLat([minLon, maxLat]),
-    fromLonLat([minLon, minLat]) // 폐곡선
-  ];
-  return new Polygon([coordinates]);
-}
-
-// Extent → Center + Scale 변환
-function extentToCenterAndScale(
-  extent: [number, number, number, number],
-  imageWidth: number,
-  imageHeight: number
-): { center: [number, number], scale: [number, number] } {
-  const centerLon = (extent[0] + extent[2]) / 2;
-  const centerLat = (extent[1] + extent[3]) / 2;
-  const center = fromLonLat([centerLon, centerLat]) as [number, number];
-
-  const polygon = createPolygonFromExtent(extent);
-  const coords = polygon.getCoordinates()[0];
-
-  const [x1, y1] = coords[0];
-  const [x2, y2] = coords[1];
-  const [x3, y3] = coords[2];
-
-  const width = Math.sqrt((x2-x1)**2 + (y2-y1)**2);
-  const height = Math.sqrt((x3-x2)**2 + (y3-y2)**2);
-
-  return { center, scale: [width/imageWidth, height/imageHeight] };
-}
-
-// ===== 동기화 함수 =====
-
-// Polygon 중심점 계산
-function calculatePolygonCenter(coords: number[][]): [number, number] {
-  let minX = Infinity, minY = Infinity;
-  let maxX = -Infinity, maxY = -Infinity;
-
-  coords.forEach(([x, y]) => {
-    minX = Math.min(minX, x);
-    minY = Math.min(minY, y);
-    maxX = Math.max(maxX, x);
-    maxY = Math.max(maxY, y);
+function addImageCanvasLayer(
+  map: Map,
+  source: ImageCanvasSource,
+  opacity: number
+): ImageLayer<ImageCanvasSource> {
+  const layer = new ImageLayer({
+    source,
+    opacity
   });
 
-  return [(minX + maxX) / 2, (minY + maxY) / 2];
+  map.getLayers().insertAt(1, layer);
+  return layer;
 }
 
-// Polygon 크기 계산
-function calculatePolygonDimensions(coords: number[][]): { width: number; height: number } {
-  const [x1, y1] = coords[0];
-  const [x2, y2] = coords[1];
-  const [x3, y3] = coords[2];
+function pointInPolygon(point: [number, number], polygon: [number, number][]): boolean {
+  let inside = false;
+  const [x, y] = point;
 
-  const width = Math.sqrt((x2 - x1) ** 2 + (y2 - y1) ** 2);
-  const height = Math.sqrt((x3 - x2) ** 2 + (y3 - y2) ** 2);
+  for (let i = 0, j = polygon.length - 1; i < polygon.length; j = i++) {
+    const xi = polygon[i][0];
+    const yi = polygon[i][1];
+    const xj = polygon[j][0];
+    const yj = polygon[j][1];
 
-  return { width, height };
-}
+    const intersect = ((yi > y) !== (yj > y)) &&
+      (x < ((xj - xi) * (y - yi)) / (yj - yi + Number.EPSILON) + xi);
 
-// Polygon 회전 각도 계산
-function calculateRotation(coords: number[][]): number {
-  const [x1, y1] = coords[0];
-  const [x2, y2] = coords[1];
-  return Math.atan2(y2 - y1, x2 - x1);
-}
-
-// Polygon 변형을 GeoImage에 동기화
-export function syncGeoImageFromPolygon(
-  polygon: Polygon,
-  geoImageSource: GeoImage
-): void {
-  if (!originalImage || !geoImageLayer) return;
-
-  const coords = polygon.getCoordinates()[0];
-
-  const center = calculatePolygonCenter(coords);
-  const { width, height } = calculatePolygonDimensions(coords);
-  const rotation = -calculateRotation(coords);
-  const scale: [number, number] = [
-    width / originalImage.naturalWidth,
-    height / originalImage.naturalHeight
-  ];
-
-  const newGeoImageSource = new GeoImage({
-    image: originalImage,
-    imageCenter: center,
-    imageScale: scale,
-    imageRotate: rotation,
-    projection: 'EPSG:3857'
-  });
-
-  geoImageLayer.setSource(newGeoImageSource);
-
-  if (proxyFeature) {
-    proxyFeature.set('geoImageSource', newGeoImageSource);
+    if (intersect) inside = !inside;
   }
 
-  console.log('GeoImage 재생성 및 동기화:', { center, scale, rotation });
+  return inside;
 }
 
-// ===== 좌표 검증 =====
+function sampleBilinear(
+  srcData: Uint8ClampedArray,
+  srcWidth: number,
+  srcHeight: number,
+  u: number,
+  v: number
+): [number, number, number, number] {
+  const x = Math.max(0, Math.min(srcWidth - 1, u));
+  const y = Math.max(0, Math.min(srcHeight - 1, v));
 
-export function validateCoordinates(
-  minLon: number,
-  minLat: number,
-  maxLon: number,
-  maxLat: number
-): boolean {
-  if (minLon < -180 || minLon > 180) return false;
-  if (maxLon < -180 || maxLon > 180) return false;
-  if (minLat < -90 || minLat > 90) return false;
-  if (maxLat < -90 || maxLat > 90) return false;
-  if (minLon >= maxLon) return false;
-  if (minLat >= maxLat) return false;
-  return true;
+  const x0 = Math.floor(x);
+  const y0 = Math.floor(y);
+  const x1 = Math.min(x0 + 1, srcWidth - 1);
+  const y1 = Math.min(y0 + 1, srcHeight - 1);
+
+  const tx = x - x0;
+  const ty = y - y0;
+
+  const i00 = (y0 * srcWidth + x0) * 4;
+  const i10 = (y0 * srcWidth + x1) * 4;
+  const i01 = (y1 * srcWidth + x0) * 4;
+  const i11 = (y1 * srcWidth + x1) * 4;
+
+  const out: [number, number, number, number] = [0, 0, 0, 0];
+
+  for (let c = 0; c < 4; c++) {
+    const v00 = srcData[i00 + c];
+    const v10 = srcData[i10 + c];
+    const v01 = srcData[i01 + c];
+    const v11 = srcData[i11 + c];
+
+    const top = v00 * (1 - tx) + v10 * tx;
+    const bottom = v01 * (1 - tx) + v11 * tx;
+    out[c] = top * (1 - ty) + bottom * ty;
+  }
+
+  return out;
 }
 
-// ===== 메인 로드 함수 =====
+function createAffineCanvasSource(
+  image: HTMLImageElement,
+  affine: AffineMatrix,
+  proxyPolygon: Polygon
+): ImageCanvasSource {
+  const inverse = invertAffine(affine);
 
-// Extent 기반 이미지 로드 (기존)
-export async function loadImage(
+  const srcCanvas = document.createElement('canvas');
+  srcCanvas.width = image.naturalWidth;
+  srcCanvas.height = image.naturalHeight;
+
+  const srcCtx = srcCanvas.getContext('2d', { willReadFrequently: true });
+  if (!srcCtx) {
+    throw new Error('이미지 버퍼 초기화에 실패했습니다.');
+  }
+
+  srcCtx.drawImage(image, 0, 0);
+  const srcImageData = srcCtx.getImageData(0, 0, srcCanvas.width, srcCanvas.height);
+  const srcData = srcImageData.data;
+
+  const ring = proxyPolygon.getCoordinates()[0] as [number, number][];
+  const polygon = ring.slice(0, -1);
+  const polyExtent = proxyPolygon.getExtent();
+
+  return new ImageCanvasSource({
+    projection: 'EPSG:3857',
+    ratio: 1,
+    canvasFunction: (requestedExtent, _resolution, pixelRatio, size) => {
+      void pixelRatio;
+      const width = Math.max(1, Math.round(size[0]));
+      const height = Math.max(1, Math.round(size[1]));
+      const canvas = document.createElement('canvas');
+      canvas.width = width;
+      canvas.height = height;
+
+      const ctx = canvas.getContext('2d');
+      if (!ctx) return canvas;
+
+      const output = ctx.createImageData(width, height);
+      const outData = output.data;
+
+      const minX = requestedExtent[0];
+      const minY = requestedExtent[1];
+      const maxX = requestedExtent[2];
+      const maxY = requestedExtent[3];
+
+      for (let py = 0; py < height; py++) {
+        const y = maxY - (py + 0.5) * ((maxY - minY) / height);
+
+        for (let px = 0; px < width; px++) {
+          const x = minX + (px + 0.5) * ((maxX - minX) / width);
+          const outIdx = (py * width + px) * 4;
+
+          if (x < polyExtent[0] || x > polyExtent[2] || y < polyExtent[1] || y > polyExtent[3]) {
+            continue;
+          }
+
+          if (!pointInPolygon([x, y], polygon)) {
+            continue;
+          }
+
+          const [u, v] = applyAffine(inverse, x, y);
+          if (u < 0 || u >= image.naturalWidth || v < 0 || v >= image.naturalHeight) {
+            continue;
+          }
+
+          const [r, g, b, a] = sampleBilinear(srcData, image.naturalWidth, image.naturalHeight, u, v);
+          outData[outIdx] = Math.round(r);
+          outData[outIdx + 1] = Math.round(g);
+          outData[outIdx + 2] = Math.round(b);
+          outData[outIdx + 3] = Math.round(a);
+        }
+      }
+
+      ctx.putImageData(output, 0, 0);
+      return canvas;
+    }
+  });
+}
+
+export async function loadImageFromAffineParams(
   map: Map,
   vectorSource: VectorSource,
   file: File,
-  extent: [number, number, number, number],
+  affine: AffineMatrix,
+  proxyPolygon: Polygon,
   opacity: number = 1.0
 ): Promise<void> {
-  if (!validateCoordinates(...extent)) {
-    throw new Error('유효하지 않은 좌표입니다. 좌표 범위를 확인하세요.');
-  }
-
-  if (geoImageLayer) {
+  if (imageLayer) {
     clearImage(map, vectorSource);
   }
 
   const image = await createImageElement(file);
+  const source = createAffineCanvasSource(image, affine, proxyPolygon);
+  const layer = addImageCanvasLayer(map, source, opacity);
 
-  const { center, scale } = extentToCenterAndScale(extent, image.naturalWidth, image.naturalHeight);
-  const { layer, source } = addGeoImageLayer(map, image, {
-    imageCenter: center,
-    imageScale: scale,
-    imageRotate: 0
-  }, opacity);
-
-  geoImageLayer = layer;
-
-  const polygon = createPolygonFromExtent(extent);
-  proxyFeature = createProxyFeature(polygon, source);
+  imageLayer = layer;
+  proxyFeature = createProxyFeature(proxyPolygon);
   vectorSource.addFeature(proxyFeature);
 
   originalImage = image;
-  currentExtent = extent;
+  currentAffine = affine;
 
-  console.log('GeoImage 로드 완료 (extent 모드):', extent);
+  console.log('Affine Warp 이미지 로드 완료');
 }
 
-// GCP 기반 이미지 로드 (신규)
+// 호환 래퍼 (기존 호출부가 남아 있을 때를 대비)
 export async function loadImageFromGCPParams(
   map: Map,
   vectorSource: VectorSource,
@@ -295,43 +271,92 @@ export async function loadImageFromGCPParams(
   proxyPolygon: Polygon,
   opacity: number = 1.0
 ): Promise<void> {
-  if (geoImageLayer) {
+  const ring = proxyPolygon.getCoordinates()[0] as [number, number][];
+  if (ring.length < 4) {
+    throw new Error('유효한 Polygon 좌표가 필요합니다.');
+  }
+
+  void geoImageParams;
+
+  // 사각형 코너 기반으로 affine 재구성
+  const img = await createImageElement(file);
+  const gcps: GCPPoint[] = [
+    { id: 'compat-1', pixel: [0, 0], map: ring[0], mapLonLat: [0, 0] },
+    { id: 'compat-2', pixel: [img.naturalWidth, 0], map: ring[1], mapLonLat: [0, 0] },
+    { id: 'compat-3', pixel: [img.naturalWidth, img.naturalHeight], map: ring[2], mapLonLat: [0, 0] },
+    { id: 'compat-4', pixel: [0, img.naturalHeight], map: ring[3], mapLonLat: [0, 0] }
+  ];
+
+  const affine = solveAffineTransform(gcps);
+
+  if (imageLayer) {
     clearImage(map, vectorSource);
   }
 
-  const image = await createImageElement(file);
+  const source = createAffineCanvasSource(img, affine, proxyPolygon);
+  const layer = addImageCanvasLayer(map, source, opacity);
 
-  const { layer, source } = addGeoImageLayer(map, image, {
-    imageCenter: geoImageParams.imageCenter,
-    imageScale: geoImageParams.imageScale,
-    imageRotate: geoImageParams.imageRotate
-  }, opacity);
-
-  geoImageLayer = layer;
-
-  proxyFeature = createProxyFeature(proxyPolygon, source);
+  imageLayer = layer;
+  proxyFeature = createProxyFeature(proxyPolygon);
   vectorSource.addFeature(proxyFeature);
-
-  originalImage = image;
-  currentExtent = null; // GCP 모드에서는 extent 없음
-
-  console.log('GeoImage 로드 완료 (GCP 모드):', geoImageParams);
+  originalImage = img;
+  currentAffine = affine;
 }
 
-// ===== 상태 관리 =====
+function isParallelogram(corners: [number, number][], tolerance = 1e-4): boolean {
+  if (corners.length < 4) return false;
+
+  const [p0, p1, p2, p3] = corners;
+  const dx = (p0[0] + p2[0]) - (p1[0] + p3[0]);
+  const dy = (p0[1] + p2[1]) - (p1[1] + p3[1]);
+  const diag = Math.hypot(p2[0] - p0[0], p2[1] - p0[1]) + Math.hypot(p3[0] - p1[0], p3[1] - p1[1]);
+  const scale = Math.max(1, diag);
+
+  return Math.hypot(dx, dy) / scale < tolerance;
+}
+
+export function syncImageFromPolygon(polygon: Polygon): void {
+  if (!originalImage || !imageLayer) return;
+
+  const ring = polygon.getCoordinates()[0] as [number, number][];
+  if (ring.length < 5) return;
+
+  const corners = [ring[0], ring[1], ring[2], ring[3]];
+
+  if (!isParallelogram(corners)) {
+    console.warn('변형 결과가 평행사변형이 아니어서 affine 동기화를 건너뜁니다.');
+    return;
+  }
+
+  const gcps: GCPPoint[] = [
+    { id: 'sync-1', pixel: [0, 0], map: corners[0], mapLonLat: [0, 0] },
+    { id: 'sync-2', pixel: [originalImage.naturalWidth, 0], map: corners[1], mapLonLat: [0, 0] },
+    { id: 'sync-3', pixel: [originalImage.naturalWidth, originalImage.naturalHeight], map: corners[2], mapLonLat: [0, 0] },
+    { id: 'sync-4', pixel: [0, originalImage.naturalHeight], map: corners[3], mapLonLat: [0, 0] }
+  ];
+
+  try {
+    const affine = solveAffineTransform(gcps);
+    const source = createAffineCanvasSource(originalImage, affine, polygon);
+    imageLayer.setSource(source);
+    currentAffine = affine;
+  } catch (error) {
+    console.warn('Affine Warp 동기화 실패:', error);
+  }
+}
 
 export function setImageOpacity(opacity: number): void {
-  if (geoImageLayer) {
-    geoImageLayer.setOpacity(opacity);
+  if (imageLayer) {
+    imageLayer.setOpacity(opacity);
     console.log('투명도 변경:', opacity);
   }
 }
 
 export function clearImage(map: Map, vectorSource: VectorSource): void {
-  if (geoImageLayer) {
-    map.removeLayer(geoImageLayer);
-    geoImageLayer = null;
-    console.log('GeoImage Layer 제거');
+  if (imageLayer) {
+    map.removeLayer(imageLayer);
+    imageLayer = null;
+    console.log('이미지 레이어 제거');
   }
 
   if (proxyFeature) {
@@ -341,17 +366,17 @@ export function clearImage(map: Map, vectorSource: VectorSource): void {
   }
 
   originalImage = null;
-  currentExtent = null;
+  currentAffine = null;
 }
 
 export function hasImage(): boolean {
-  return geoImageLayer !== null;
-}
-
-export function getImageExtent(): [number, number, number, number] | null {
-  return currentExtent;
+  return imageLayer !== null;
 }
 
 export function getBoundingPolygon(): Feature<Polygon> | null {
   return proxyFeature;
+}
+
+export function getCurrentAffine(): AffineMatrix | null {
+  return currentAffine;
 }

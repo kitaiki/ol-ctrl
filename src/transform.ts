@@ -3,7 +3,7 @@ import VectorSource from 'ol/source/Vector';
 // @ts-ignore - ol-ext does not have TypeScript declarations
 import Transform from 'ol-ext/interaction/Transform';
 import { Style, Stroke, Fill, Icon } from 'ol/style';
-import { syncGeoImageFromPolygon } from './image-overlay';
+import { syncImageFromPolygon } from './image-overlay';
 import { Polygon } from 'ol/geom';
 
 let transformInteraction: Transform | null = null;
@@ -68,10 +68,9 @@ function syncImageIfNeeded(event: any): void {
   const features = event.features.getArray();
   features.forEach((feature: any) => {
     if (feature.get('isImageOverlay')) {
-      const geoImageSource = feature.get('geoImageSource');
       const polygon = feature.getGeometry() as Polygon;
-      if (geoImageSource && polygon) {
-        syncGeoImageFromPolygon(polygon, geoImageSource);
+      if (polygon) {
+        syncImageFromPolygon(polygon);
       }
     }
   });
