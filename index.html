@@ -197,44 +197,6 @@
     }
 
     /* ===== 탭 시스템 ===== */
-    .mode-tabs {
-      display: flex;
-      gap: 0;
-      margin-bottom: 15px;
-      border-bottom: 2px solid #ecf0f1;
-    }
-
-    .mode-tabs button {
-      flex: 1;
-      padding: 8px 12px;
-      border: none;
-      border-radius: 5px 5px 0 0;
-      background: #ecf0f1;
-      color: #7f8c8d;
-      cursor: pointer;
-      font-size: 13px;
-      font-weight: 600;
-      transition: all 0.2s ease;
-    }
-
-    .mode-tabs button:hover {
-      background: #d5dbdb;
-      transform: none;
-    }
-
-    .mode-tabs button.active {
-      background: #3498db;
-      color: white;
-    }
-
-    .mode-content {
-      display: none;
-    }
-
-    .mode-content.active {
-      display: block;
-    }
-
     /* ===== GCP 미리보기 ===== */
     .image-preview-container {
       border: 2px dashed #bdc3c7;
@@ -368,33 +330,8 @@
       <input type="file" id="imageFile" accept="image/png,image/jpeg,image/jpg">
     </div>
 
-    <!-- 탭 버튼 -->
-    <div class="mode-tabs">
-      <button id="extentModeTab" class="active" type="button">좌표 범위 모드</button>
-      <button id="gcpModeTab" type="button">GCP 모드</button>
-    </div>
-
-    <!-- 좌표 범위 모드 -->
-    <div id="extentModeContent" class="mode-content active">
-      <div class="form-group">
-        <label>좌표 범위 (경도/위도):</label>
-        <button id="pickCoordBtn" class="secondary" type="button">
-          지도에서 선택 (2번 클릭)
-        </button>
-        <div id="pickInstructions" class="instructions hidden">
-          지도에서 2개 지점을 클릭하세요 (순서 무관)
-        </div>
-        <div class="coords-grid">
-          <input type="number" id="minLon" placeholder="최소 경도" step="0.000001">
-          <input type="number" id="minLat" placeholder="최소 위도" step="0.000001">
-          <input type="number" id="maxLon" placeholder="최대 경도" step="0.000001">
-          <input type="number" id="maxLat" placeholder="최대 위도" step="0.000001">
-        </div>
-      </div>
-    </div>
-
     <!-- GCP 모드 -->
-    <div id="gcpModeContent" class="mode-content">
+    <div id="gcpModeContent">
       <!-- 이미지 미리보기 -->
       <div class="form-group">
         <label>이미지 미리보기:</label>

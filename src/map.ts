@@ -25,7 +25,7 @@ export function initMap(): { map: Map; vectorSource: VectorSource } {
       vectorLayer,
     ],
     view: new View({
-      center: fromLonLat([127.0276, 37.4979]), // 서울 강남구
+      center: fromLonLat([128.6276, 35.8777]), // 동대구역
       zoom: 13,
     }),
   });

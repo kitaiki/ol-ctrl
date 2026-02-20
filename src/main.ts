@@ -3,13 +3,7 @@ import 'ol-ext/dist/ol-ext.css';
 import { initMap } from './map';
 import { startDrawing, stopDrawing, isDrawing } from './draw';
 import { initTransform, startTransform, stopTransform, isTransformActive } from './transform';
-import { loadImage, loadImageFromGCPParams, clearImage, setImageOpacity, hasImage, validateCoordinates, createImageElement } from './image-overlay';
-import {
-  initCoordinatePicker,
-  startPickingCoordinates,
-  stopPickingCoordinates,
-  isCoordinatePickingActive
-} from './coord-picker';
+import { loadImageFromGCPParams, clearImage, setImageOpacity, hasImage, createImageElement } from './image-overlay';
 import {
   initAlignRotate,
   startSelectMode,
@@ -43,9 +37,6 @@ const { map, vectorSource } = initMap();
 // Transform 인터랙션 초기화
 initTransform(map, vectorSource);
 
-// 좌표 선택 기능 초기화
-initCoordinatePicker(map, vectorSource);
-
 // Align Rotate 기능 초기화
 initAlignRotate(map, vectorSource);
 
@@ -62,22 +53,10 @@ const clearBtn = document.getElementById('clearBtn') as HTMLButtonElement;
 const imageOverlayBtn = document.getElementById('imageOverlayBtn') as HTMLButtonElement;
 const imagePanel = document.getElementById('imagePanel') as HTMLDivElement;
 const imageFile = document.getElementById('imageFile') as HTMLInputElement;
-const minLonInput = document.getElementById('minLon') as HTMLInputElement;
-const minLatInput = document.getElementById('minLat') as HTMLInputElement;
-const maxLonInput = document.getElementById('maxLon') as HTMLInputElement;
-const maxLatInput = document.getElementById('maxLat') as HTMLInputElement;
 const opacitySlider = document.getElementById('opacitySlider') as HTMLInputElement;
 const opacityValue = document.getElementById('opacityValue') as HTMLSpanElement;
 const applyImageBtn = document.getElementById('applyImageBtn') as HTMLButtonElement;
 const clearImageBtn = document.getElementById('clearImageBtn') as HTMLButtonElement;
-const pickCoordBtn = document.getElementById('pickCoordBtn') as HTMLButtonElement;
-const pickInstructions = document.getElementById('pickInstructions') as HTMLDivElement;
-
-// 탭 UI 요소
-const extentModeTab = document.getElementById('extentModeTab') as HTMLButtonElement;
-const gcpModeTab = document.getElementById('gcpModeTab') as HTMLButtonElement;
-const extentModeContent = document.getElementById('extentModeContent') as HTMLDivElement;
-const gcpModeContent = document.getElementById('gcpModeContent') as HTMLDivElement;
 
 // GCP UI 요소
 const addGCPBtn = document.getElementById('addGCPBtn') as HTMLButtonElement;
@@ -86,9 +65,6 @@ const gcpTableBody = document.getElementById('gcpTableBody') as HTMLTableSection
 const gcpStatus = document.getElementById('gcpStatus') as HTMLDivElement;
 const gcpPreviewCanvas = document.getElementById('gcpPreviewCanvas') as HTMLCanvasElement;
 const gcpPreviewPlaceholder = document.getElementById('gcpPreviewPlaceholder') as HTMLDivElement;
-
-// 현재 활성 탭
-let activeMode: 'extent' | 'gcp' = 'extent';
 
 // ===== GCP Picker 초기화 =====
 
@@ -113,13 +89,6 @@ function deactivateAllModes(): void {
     stopTransform();
     editBtn.classList.remove('active');
   }
-  if (isCoordinatePickingActive()) {
-    stopPickingCoordinates();
-    pickCoordBtn.classList.remove('active');
-    pickInstructions.classList.add('hidden');
-    const mapElement = map.getTargetElement();
-    if (mapElement) mapElement.classList.remove('coordinate-picking');
-  }
   if (isSelectModeActive()) {
     stopSelectMode();
     selectBtn.classList.remove('active');
@@ -128,48 +97,6 @@ function deactivateAllModes(): void {
     cancelGCPPicking();
   }
 }
-
-// ===== 탭 전환 =====
-
-extentModeTab.addEventListener('click', () => {
-  if (activeMode === 'extent') return;
-
-  // GCP 피킹 취소
-  if (isGCPPickingActive()) {
-    cancelGCPPicking();
-  }
-
-  activeMode = 'extent';
-  extentModeTab.classList.add('active');
-  gcpModeTab.classList.remove('active');
-  extentModeContent.classList.add('active');
-  gcpModeContent.classList.remove('active');
-});
-
-gcpModeTab.addEventListener('click', () => {
-  if (activeMode === 'gcp') return;
-
-  // 좌표 선택 모드 비활성화
-  if (isCoordinatePickingActive()) {
-    stopPickingCoordinates();
-    pickCoordBtn.classList.remove('active');
-    pickInstructions.classList.add('hidden');
-    const mapElement = map.getTargetElement();
-    if (mapElement) mapElement.classList.remove('coordinate-picking');
-  }
-
-  activeMode = 'gcp';
-  gcpModeTab.classList.add('active');
-  extentModeTab.classList.remove('active');
-  gcpModeContent.classList.add('active');
-  extentModeContent.classList.remove('active');
-
-  // 이미지가 이미 선택되어 있으면 미리보기 업데이트
-  const currentImg = getCurrentImage();
-  if (!currentImg && imageFile.files && imageFile.files.length > 0) {
-    loadPreviewImage(imageFile.files[0]);
-  }
-});
 
 // ===== 이미지 파일 변경 시 GCP 미리보기 업데이트 =====
 
@@ -339,62 +266,41 @@ applyImageBtn.addEventListener('click', async () => {
     const file = imageFile.files[0];
     const opacity = parseInt(opacitySlider.value) / 100;
 
-    if (activeMode === 'extent') {
-      // Extent 모드
-      const minLon = parseFloat(minLonInput.value);
-      const minLat = parseFloat(minLatInput.value);
-      const maxLon = parseFloat(maxLonInput.value);
-      const maxLat = parseFloat(maxLatInput.value);
+    // GCP 모드
+    const gcps = getGCPList();
 
-      if (!validateCoordinates(minLon, minLat, maxLon, maxLat)) {
-        alert('유효하지 않은 좌표입니다. 좌표 범위를 확인하세요.\n\n' +
-              '- 경도: -180 ~ 180\n' +
-              '- 위도: -90 ~ 90\n' +
-              '- 최소값 < 최대값');
-        return;
-      }
-
-      const extent: [number, number, number, number] = [minLon, minLat, maxLon, maxLat];
-      await loadImage(map, vectorSource, file, extent, opacity);
-      alert('이미지가 성공적으로 로드되었습니다.');
-
-    } else {
-      // GCP 모드
-      const gcps = getGCPList();
-
-      // 검증
-      const validation = validateGCPs(gcps);
-      if (!validation.valid) {
-        alert('GCP 검증 실패:\n\n' + validation.errors.join('\n'));
-        return;
-      }
-      if (validation.warnings.length > 0) {
-        const proceed = confirm('경고:\n\n' + validation.warnings.join('\n') + '\n\n계속 진행하시겠습니까?');
-        if (!proceed) return;
-      }
-
-      // 이미지 크기 가져오기
-      const img = getCurrentImage();
-      if (!img) {
-        alert('이미지 미리보기가 로드되지 않았습니다.');
-        return;
-      }
-
-      // 아핀 변환 계산
-      const affine = solveAffineTransform(gcps);
-      const geoImageParams = decomposeAffineToGeoImageParams(affine, img.naturalWidth, img.naturalHeight);
-      const proxyPolygon = createProxyPolygonFromAffine(affine, img.naturalWidth, img.naturalHeight);
-
-      console.log('아핀 변환 결과:', affine);
-      console.log('GeoImage 파라미터:', geoImageParams);
-
-      // GCP 마커 제거 (이미지 적용 후)
-      clearGCPs();
-      updateGCPTable([]);
-
-      await loadImageFromGCPParams(map, vectorSource, file, geoImageParams, proxyPolygon, opacity);
-      alert('GCP 기반 이미지가 성공적으로 로드되었습니다.');
+    // 검증
+    const validation = validateGCPs(gcps);
+    if (!validation.valid) {
+      alert('GCP 검증 실패:\n\n' + validation.errors.join('\n'));
+      return;
     }
+    if (validation.warnings.length > 0) {
+      const proceed = confirm('경고:\n\n' + validation.warnings.join('\n') + '\n\n계속 진행하시겠습니까?');
+      if (!proceed) return;
+    }
+
+    // 이미지 크기 가져오기
+    const img = getCurrentImage();
+    if (!img) {
+      alert('이미지 미리보기가 로드되지 않았습니다.');
+      return;
+    }
+
+    // 아핀 변환 계산
+    const affine = solveAffineTransform(gcps);
+    const geoImageParams = decomposeAffineToGeoImageParams(affine, img.naturalWidth, img.naturalHeight);
+    const proxyPolygon = createProxyPolygonFromAffine(affine, img.naturalWidth, img.naturalHeight);
+
+    console.log('아핀 변환 결과:', affine);
+    console.log('GeoImage 파라미터:', geoImageParams);
+
+    // GCP 마커 제거 (이미지 적용 후)
+    clearGCPs();
+    updateGCPTable([]);
+
+    await loadImageFromGCPParams(map, vectorSource, file, geoImageParams, proxyPolygon, opacity);
+    alert('GCP 기반 이미지가 성공적으로 로드되었습니다.');
 
   } catch (error) {
     console.error('이미지 로드 오류:', error);
@@ -419,32 +325,6 @@ opacitySlider.addEventListener('input', (e) => {
   const opacity = parseInt((e.target as HTMLInputElement).value) / 100;
   setImageOpacity(opacity);
   opacityValue.textContent = `${Math.round(opacity * 100)}%`;
-});
-
-// ===== 좌표 선택 버튼 =====
-
-pickCoordBtn.addEventListener('click', () => {
-  if (isCoordinatePickingActive()) {
-    stopPickingCoordinates();
-    pickCoordBtn.classList.remove('active');
-    pickInstructions.classList.add('hidden');
-
-    const mapElement = map.getTargetElement();
-    if (mapElement) mapElement.classList.remove('coordinate-picking');
-
-    console.log('좌표 선택 모드 종료 (수동)');
-  } else {
-    deactivateAllModes();
-
-    startPickingCoordinates(minLonInput, minLatInput, maxLonInput, maxLatInput);
-    pickCoordBtn.classList.add('active');
-    pickInstructions.classList.remove('hidden');
-
-    const mapElement = map.getTargetElement();
-    if (mapElement) mapElement.classList.add('coordinate-picking');
-
-    console.log('좌표 선택 모드 시작');
-  }
 });
 
 // ===== 선택 버튼 (기준 객체 및 회전 대상 선택) =====
